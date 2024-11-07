@@ -18,8 +18,9 @@ const MAX_CONNECTIONS = 10
 
 func getArgs() HTTPserver {
 	portvar := flag.String("port", "1234", "a port")
+	verbose := flag.Bool("v", false, "a bool")
 	flag.Parse()
-	return HTTPserver{*portvar, "tcp", 0, 0, *sync.NewCond(&sync.Mutex{})}
+	return HTTPserver{*portvar, "tcp", 0, 0, HTTPTracer{*verbose}, *sync.NewCond(&sync.Mutex{})}
 }
 
 func connectionHandler(con net.Conn, server *HTTPserver) {
@@ -34,6 +35,7 @@ func connectionHandler(con net.Conn, server *HTTPserver) {
 	if err != nil {
 		// Benchmarking tools might make extra connections without
 		// intent on transfering data
+		server.tracer.Trace("Client closed connection without sending data: %s", err.Error())
 		return
 	}
 	request := getHTTPRequest(readBuffer[:n])
@@ -48,7 +50,7 @@ func connectionHandler(con net.Conn, server *HTTPserver) {
 	//Init response
 	request.Response = &response
 	// Handle the request: fill the response with info
-	handleHTTPRequest(&request)
+	handleHTTPRequest(&request, server)
 
 	//Write back on connection
 	var writeBuffer bytes.Buffer
@@ -76,15 +78,17 @@ func getHTTPRequest(buffer []byte) http.Request {
 	return *httpReq
 }
 
-func handleHTTPRequest(httpReq *http.Request) {
+func handleHTTPRequest(httpReq *http.Request, server *HTTPserver) {
 	switch httpReq.Method {
 	case "GET":
 		makeGet(httpReq)
 	case "POST":
 		makePost(httpReq)
+		server.tracer.Trace("File created: %s", httpReq.RequestURI)
 	default:
 		httpReq.Response.Status = "501 Not Implemented"
 		httpReq.Response.StatusCode = 501
+		server.tracer.Trace("Received non implemented request: %s", httpReq.Method)
 	}
 }
 
@@ -150,7 +154,12 @@ func makePost(httpReq *http.Request) {
 	if _, cperr := io.Copy(outFile, httpReq.Body); cperr != nil {
 		log.Fatal(cperr)
 	}
-	fmt.Println("File created")
+}
+
+func (tracer HTTPTracer) Trace(format string, a ...any) {
+	if tracer.verbose {
+		fmt.Printf(format+"\n", a...)
+	}
 }
 
 func main() {
@@ -179,11 +188,15 @@ func main() {
 		if server.numConnections > MAX_CONNECTIONS {
 			log.Fatal("Server capacity exceeded: EXPLODE")
 		}
-		//fmt.Printf("Starting connectionHandler with %d connections\n", server.numConnections)
+
+		server.tracer.Trace("Starting connectionHandler with %d concurrent connections\n", server.numConnections)
+
 		server.serverCondition.L.Unlock()
 
 		go connectionHandler(connection, &server)
-		fmt.Println("Total connections served: ", server.numTotal)
+
+		server.tracer.Trace("Total connections served: %d", server.numTotal)
+
 	}
 
 }

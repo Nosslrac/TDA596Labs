@@ -7,5 +7,10 @@ type HTTPserver struct {
 	serverType      string
 	numConnections  int
 	numTotal        int
+	tracer          HTTPTracer
 	serverCondition sync.Cond
+}
+
+type HTTPTracer struct {
+	verbose bool
 }

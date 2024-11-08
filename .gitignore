@@ -25,3 +25,9 @@ go.work.sum
 .env
 
 */httpserver
+**/proxy
+*.txt
+*.html
+*.jpg
+*.jpeg
+*.css

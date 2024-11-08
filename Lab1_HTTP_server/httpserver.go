@@ -23,38 +23,40 @@ func getArgs() HTTPserver {
 	return HTTPserver{*portvar, "tcp", 0, 0, HTTPTracer{*verbose}, *sync.NewCond(&sync.Mutex{})}
 }
 
-func connectionHandler(con net.Conn, server *HTTPserver) {
+func (server *HTTPserver) connectionHandler(con net.Conn) {
+	defer con.Close()
+
 	server.serverCondition.L.Lock()
 	if server.numConnections > MAX_CONNECTIONS {
 		log.Fatal("Over max capacity: Exiting")
 	}
 	server.serverCondition.L.Unlock()
-	defer con.Close()
-	readBuffer := make([]byte, 1024)
-	n, err := con.Read(readBuffer)
-	if err != nil {
+
+	reader := bufio.NewReader(con)
+	request, rerr := http.ReadRequest(reader)
+
+	if rerr != nil {
 		// Benchmarking tools might make extra connections without
 		// intent on transfering data
-		server.tracer.Trace("Client closed connection without sending data: %s", err.Error())
+		server.tracer.Trace("Client closed connection without sending data: %s", rerr.Error())
 		return
 	}
-	request := getHTTPRequest(readBuffer[:n])
-	response := http.Response{ // Default response might change later
-		Proto:      request.Proto,
-		ProtoMajor: request.ProtoMajor,
-		ProtoMinor: request.ProtoMinor,
-		Status:     "200 OK",
-		StatusCode: 200,
-		Header:     make(http.Header),
-	}
+
 	//Init response
+	response := defaultResponse(request)
 	request.Response = &response
+
 	// Handle the request: fill the response with info
-	handleHTTPRequest(&request, server)
+	server.handleHTTPRequest(request)
 
 	//Write back on connection
 	var writeBuffer bytes.Buffer
-	request.Response.Write(&writeBuffer)
+	if werr := request.Response.Write(&writeBuffer); werr != nil {
+		log.Print("Write")
+	}
+	if body := request.Response.Body; body != nil {
+		body.Close()
+	}
 	con.Write(writeBuffer.Bytes())
 
 	server.serverCondition.L.Lock()
@@ -65,25 +67,23 @@ func connectionHandler(con net.Conn, server *HTTPserver) {
 	server.serverCondition.L.Unlock()
 }
 
-func getHTTPRequest(buffer []byte) http.Request {
-	// Check if content exists
-	reader := bytes.NewReader(buffer)
-	bufReader := bufio.NewReader(reader)
-	httpReq, err := http.ReadRequest(bufReader)
-
-	if err != nil {
-		log.Fatal(err)
-		return http.Request{}
+func defaultResponse(request *http.Request) http.Response {
+	return http.Response{ // Default response might change later
+		Proto:      request.Proto,
+		ProtoMajor: request.ProtoMajor,
+		ProtoMinor: request.ProtoMinor,
+		Status:     "200 OK",
+		StatusCode: 200,
+		Header:     make(http.Header),
 	}
-	return *httpReq
 }
 
-func handleHTTPRequest(httpReq *http.Request, server *HTTPserver) {
+func (server *HTTPserver) handleHTTPRequest(httpReq *http.Request) {
 	switch httpReq.Method {
 	case "GET":
-		makeGet(httpReq)
+		performGet(httpReq)
 	case "POST":
-		makePost(httpReq)
+		performPost(httpReq)
 		server.tracer.Trace("File created: %s", httpReq.RequestURI)
 	default:
 		httpReq.Response.Status = "501 Not Implemented"
@@ -92,7 +92,7 @@ func handleHTTPRequest(httpReq *http.Request, server *HTTPserver) {
 	}
 }
 
-func makeGet(httpReq *http.Request) {
+func performGet(httpReq *http.Request) {
 	//fmt.Println(path.Ext(httpReq.RequestURI))
 	switch path.Ext(httpReq.RequestURI) {
 	case ".html":
@@ -138,7 +138,7 @@ func makeGet(httpReq *http.Request) {
 	httpReq.Response.Body = file
 }
 
-func makePost(httpReq *http.Request) {
+func performPost(httpReq *http.Request) {
 	workingDir, werr := os.Getwd()
 	if werr != nil {
 		log.Fatal(werr)
@@ -182,18 +182,18 @@ func main() {
 		server.numTotal++
 		for server.numConnections == MAX_CONNECTIONS {
 			server.serverCondition.Wait()
-			//fmt.Println("Woken up")
+			server.tracer.Trace("Server woken up, accepting new connection\n")
 		}
 		server.numConnections++
 		if server.numConnections > MAX_CONNECTIONS {
 			log.Fatal("Server capacity exceeded: EXPLODE")
 		}
 
-		server.tracer.Trace("Starting connectionHandler with %d concurrent connections\n", server.numConnections)
+		server.tracer.Trace("Concurrency level %d\n", server.numConnections)
 
 		server.serverCondition.L.Unlock()
 
-		go connectionHandler(connection, &server)
+		go server.connectionHandler(connection)
 
 		server.tracer.Trace("Total connections served: %d", server.numTotal)
 

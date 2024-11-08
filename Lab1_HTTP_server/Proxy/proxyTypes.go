@@ -1,10 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 )
 
-type HTTPserver struct {
+type HTTPProxy struct {
 	port            string
 	serverType      string
 	numConnections  int
@@ -15,4 +16,10 @@ type HTTPserver struct {
 
 type HTTPTracer struct {
 	verbose bool
+}
+
+func (tracer HTTPTracer) Trace(format string, a ...any) {
+	if tracer.verbose {
+		fmt.Printf(format+"\n", a...)
+	}
 }

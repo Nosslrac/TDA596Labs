@@ -46,13 +46,13 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 	response := defaultResponse(request)
 	request.Response = &response
 
-	// Handle the request: fill the response with info
+	// Handle the request: fills the request.Response with info
 	server.handleHTTPRequest(request)
 
 	//Write back on connection
 	var writeBuffer bytes.Buffer
 	if werr := request.Response.Write(&writeBuffer); werr != nil {
-		log.Print("Write")
+		log.Print("Write failed: ", werr)
 	}
 	if body := request.Response.Body; body != nil {
 		body.Close()
@@ -114,11 +114,12 @@ func performGet(httpReq *http.Request) {
 	}
 	workingDir, err := os.Getwd()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Filesystem not readable: ", err)
 		return
 	}
-	//fmt.Println("File", httpReq.Response.Header.Get("Content-Type"))
+
 	// Try to open the file
+    // TODO: should file be closed? Concurrent requests might suffer, lock around file opening=
 	file, fileError := os.Open(workingDir + httpReq.RequestURI)
 
 	if fileError != nil {
@@ -131,7 +132,7 @@ func performGet(httpReq *http.Request) {
 	fileInfo, infoError := file.Stat()
 
 	if infoError != nil {
-		log.Fatal(infoError)
+		log.Fatal("File not found: ", infoError)
 	}
 	httpReq.Response.Header.Add("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 	httpReq.Response.Header.Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileInfo.Name()))
@@ -144,7 +145,7 @@ func performPost(httpReq *http.Request) {
 		log.Fatal(werr)
 		return
 	}
-
+    // TODO: if file exists should it be overwritten?
 	outFile, cerr := os.Create(workingDir + httpReq.RequestURI)
 	if cerr != nil {
 		log.Fatal(cerr)

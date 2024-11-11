@@ -21,7 +21,6 @@ func (proxy *HTTPProxy) connectionHandler(clientCon net.Conn) {
 		log.Fatal("Over max capacity: Exiting")
 	}
 	proxy.serverCondition.L.Unlock()
-
 	reader := bufio.NewReader(clientCon)
 	request, rerr := http.ReadRequest(reader)
 	if rerr != nil {
@@ -60,6 +59,17 @@ func (proxy *HTTPProxy) requestAndForward(request *http.Request, clientCon net.C
 
 	if request.Host == "" {
 		log.Print("HTTP request incomplete: host missing")
+		response := badRequest(request)
+		writeResponse(&response, clientCon)
+		return
+	}
+
+	fmt.Println("Our address: ", clientCon.LocalAddr().String(), request.URL.Port())
+	fmt.Println("Requested address: ", request.Host)
+
+	if request.Host == clientCon.LocalAddr().String() || 
+	request.Host == "localhost:"+proxy.port {
+		log.Print("HTTP request incomplete: proxy is target")
 		response := badRequest(request)
 		writeResponse(&response, clientCon)
 		return

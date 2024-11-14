@@ -64,7 +64,7 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 	if server.numConnections == MAX_CONNECTIONS-1 {
 		server.serverCondition.Signal()
 	}
-	server.serverCondition.L.Unlock()
+	defer server.serverCondition.L.Unlock()
 }
 
 func defaultResponse(request *http.Request) http.Response {
@@ -74,6 +74,19 @@ func defaultResponse(request *http.Request) http.Response {
 		ProtoMinor: request.ProtoMinor,
 		Status:     "200 OK",
 		StatusCode: 200,
+		Close:      true,
+		Header:     make(http.Header),
+	}
+}
+
+func internalErrorResponse() http.Response {
+	return http.Response{
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Status:     "500 Internal Server Error",
+		StatusCode: 500,
+		Close:      true,
 		Header:     make(http.Header),
 	}
 }
@@ -114,12 +127,14 @@ func performGet(httpReq *http.Request) {
 	}
 	workingDir, err := os.Getwd()
 	if err != nil {
-		log.Fatal("Filesystem not readable: ", err)
+		erresponse := internalErrorResponse()
+		httpReq.Response = &erresponse
+		fmt.Println("Filesystem not readable: ", err)
 		return
 	}
 
 	// Try to open the file
-    // TODO: should file be closed? Concurrent requests might suffer, lock around file opening=
+	// TODO: should file be closed? Concurrent requests might suffer, lock around file opening=
 	file, fileError := os.Open(workingDir + httpReq.RequestURI)
 
 	if fileError != nil {
@@ -132,7 +147,10 @@ func performGet(httpReq *http.Request) {
 	fileInfo, infoError := file.Stat()
 
 	if infoError != nil {
-		log.Fatal("File not found: ", infoError)
+		erresponse := internalErrorResponse()
+		httpReq.Response = &erresponse
+		fmt.Println("File not found: ", infoError)
+		return
 	}
 	httpReq.Response.Header.Add("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 	httpReq.Response.Header.Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileInfo.Name()))
@@ -142,18 +160,26 @@ func performGet(httpReq *http.Request) {
 func performPost(httpReq *http.Request) {
 	workingDir, werr := os.Getwd()
 	if werr != nil {
-		log.Fatal(werr)
+		erresponse := internalErrorResponse()
+		httpReq.Response = &erresponse
+		fmt.Println("Could not get working directory", werr)
 		return
 	}
-    // TODO: if file exists should it be overwritten?
+	// TODO: if file exists should it be overwritten?
 	outFile, cerr := os.Create(workingDir + httpReq.RequestURI)
 	if cerr != nil {
-		log.Fatal(cerr)
+		erresponse := internalErrorResponse()
+		httpReq.Response = &erresponse
+		fmt.Println("Could not create file", cerr)
+		return
 	}
 	defer outFile.Close()
 
 	if _, cperr := io.Copy(outFile, httpReq.Body); cperr != nil {
-		log.Fatal(cperr)
+		erresponse := internalErrorResponse()
+		httpReq.Response = &erresponse
+		fmt.Println("Could not copy POST request to file", cperr)
+		return
 	}
 }
 

@@ -63,3 +63,13 @@ Benchmarking the server by GETing test.txt 100 times 20 requests at the time
 ```sh
 ab -v 2 -n 100 -c 20 localhost:1234/test.txt
 ```
+
+## Testsuite usage
+The server also comes with a testsuite which is run by specifying server ip and port aswell as proxy port (proxy is assumed to run on localhost).
+```sh
+./testsuite.sh <serverip> <serverport> <proxyport>
+```
+For example
+```sh
+./testsuite.sh localhost 5555 2222
+```

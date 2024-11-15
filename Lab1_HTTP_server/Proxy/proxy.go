@@ -64,9 +64,6 @@ func (proxy *HTTPProxy) requestAndForward(request *http.Request, clientCon net.C
 		return
 	}
 
-	fmt.Println("Our address: ", clientCon.LocalAddr().String(), request.URL.Port())
-	fmt.Println("Requested address: ", request.Host)
-
 	if request.Host == clientCon.LocalAddr().String() || 
 	request.Host == "localhost:"+proxy.port {
 		log.Print("HTTP request incomplete: proxy is target")

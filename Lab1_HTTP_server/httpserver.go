@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"time"
 )
 
 const MAX_CONNECTIONS = 10
@@ -23,14 +24,28 @@ func getArgs() HTTPserver {
 	return HTTPserver{*portvar, "tcp", 0, 0, HTTPTracer{*verbose}, *sync.NewCond(&sync.Mutex{})}
 }
 
-func (server *HTTPserver) connectionHandler(con net.Conn) {
-	defer con.Close()
-
+func (server *HTTPserver) increment() {
 	server.serverCondition.L.Lock()
 	if server.numConnections > MAX_CONNECTIONS {
 		log.Fatal("Over max capacity: Exiting")
 	}
 	server.serverCondition.L.Unlock()
+}
+
+func (server *HTTPserver) decrement() {
+	server.serverCondition.L.Lock()
+	server.numConnections--
+	if server.numConnections == MAX_CONNECTIONS-1 {
+		server.serverCondition.Signal()
+	}
+	defer server.serverCondition.L.Unlock()
+}
+
+func (server *HTTPserver) connectionHandler(con net.Conn) {
+	server.increment()
+
+	defer con.Close()
+	con.SetReadDeadline(time.Now().Add(time.Second * 5))
 
 	reader := bufio.NewReader(con)
 	request, rerr := http.ReadRequest(reader)
@@ -39,6 +54,7 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 		// Benchmarking tools might make extra connections without
 		// intent on transfering data
 		server.tracer.Trace("Client closed connection without sending data: %s", rerr.Error())
+		server.decrement()
 		return
 	}
 
@@ -57,14 +73,11 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 	if body := request.Response.Body; body != nil {
 		body.Close()
 	}
-	con.Write(writeBuffer.Bytes())
-
-	server.serverCondition.L.Lock()
-	server.numConnections--
-	if server.numConnections == MAX_CONNECTIONS-1 {
-		server.serverCondition.Signal()
+	if _, err := con.Write(writeBuffer.Bytes()); err != nil {
+		log.Print("Write failed")
 	}
-	defer server.serverCondition.L.Unlock()
+
+	server.decrement()
 }
 
 func defaultResponse(request *http.Request) http.Response {

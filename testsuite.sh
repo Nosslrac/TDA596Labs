@@ -50,7 +50,7 @@ printf "\n# Get image file that was posted: output to fetchedImage.jpg #\n"
 curl -s -D - -X GET $serverip:$serverport/testImage.jpg -o $out/fetchedImage.jpg
 
 printf "\n## Bench mark server START ##\n"
-ab -v 2 -n 100 -c 20 $serverip:$serverport/test.txt > $out/serverBenchamark.txt
+ab -v 2 -n 1000 -c 100 $serverip:$serverport/test.txt > $out/serverBenchamark.txt
 printf "\n## Server bench mark END: see $out/serverBenchamark.txt for results ##\n\n"
 
 if [ -z "$3" ]

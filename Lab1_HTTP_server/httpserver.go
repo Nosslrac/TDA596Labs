@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -41,11 +42,29 @@ func (server *HTTPserver) decrement() {
 	defer server.serverCondition.L.Unlock()
 }
 
+func scaleDeadline(con net.Conn, request *http.Request){
+	if request.Header == nil || request.Method == "GET" {
+		con.SetDeadline(time.Now().Add(time.Millisecond))
+		return
+	}
+	len := request.Header.Get("Content-Length")
+	if len != "" {
+		con.SetDeadline(time.Now().Add(time.Millisecond * 1000))
+		return
+	}
+	parsedLen, err := strconv.Atoi(len)
+	if err != nil {
+		con.SetDeadline(time.Now().Add(time.Millisecond * 1000))
+		return
+	}
+	con.SetDeadline(time.Now().Add(time.Millisecond * time.Duration(parsedLen / 100)))
+	return
+}
+
 func (server *HTTPserver) connectionHandler(con net.Conn) {
 	server.increment()
 
 	defer con.Close()
-	con.SetReadDeadline(time.Now().Add(time.Second * 5))
 
 	reader := bufio.NewReader(con)
 	request, rerr := http.ReadRequest(reader)
@@ -57,6 +76,8 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 		server.decrement()
 		return
 	}
+
+	scaleDeadline(con, request)
 
 	//Init response
 	response := defaultResponse(request)
@@ -194,6 +215,7 @@ func performPost(httpReq *http.Request) {
 		fmt.Println("Could not copy POST request to file", cperr)
 		return
 	}
+	httpReq.Body.Close()
 }
 
 func (tracer HTTPTracer) Trace(format string, a ...any) {

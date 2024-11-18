@@ -26,6 +26,8 @@ func (proxy *HTTPProxy) connectionHandler(clientCon net.Conn) {
 	if rerr != nil {
 		// Benchmarking tools might make extra connections without
 		// intent on transfering data
+		response := internalErrorResponse()
+		writeResponse(&response, clientCon)
 		proxy.tracer.Trace("Client closed connection without sending data: %s", rerr.Error())
 		return
 	}
@@ -116,6 +118,18 @@ func badRequest(request *http.Request) http.Response {
 		ProtoMinor: request.ProtoMinor,
 		Status:     "400 Bad Request",
 		StatusCode: 400,
+	}
+}
+
+func internalErrorResponse() http.Response {
+	return http.Response{
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Status:     "500 Internal Server Error",
+		StatusCode: 500,
+		Close:      true,
+		Header:     make(http.Header),
 	}
 }
 

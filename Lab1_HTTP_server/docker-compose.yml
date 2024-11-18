@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  httpserver:
+    build: .
+    command: ./httpserver -port=3333
+    ports: 
+      - "3333:3333"
+    networks:
+      - app_network
+
+  proxy:
+    build: Proxy/.
+    command: ./proxy -port=5555
+    ports:
+      - "5555:5555"
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge

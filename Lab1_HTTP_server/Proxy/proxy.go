@@ -38,9 +38,6 @@ func (proxy *HTTPProxy) connectionHandler(clientCon net.Conn) {
 		return
 	}
 
-	// Check if we need to dial the server
-	// TODO check for local data first
-
 	// Request data from the server and forward response to client
 	proxy.requestAndForward(request, clientCon)
 

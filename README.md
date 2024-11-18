@@ -23,6 +23,32 @@ go build .
 
 The proxy is run is run in a very similar fashion as the HTTP server and the same flags apply.
 
+## Using Docker
+You need to have docker installed. To build the HTTP server navigate to ```Lab1_HTTP_server``` folder and run the following command:
+```sh
+docker build -t httpserver:latest .
+docker run -p <externalport>:<internalport> httpserver:latest ./httpserver -port=<internalport>
+e.g.
+docker run -p 5555:1010 httpserver:latest ./httpserver -port=1010
+```
+This will start the server on internal port 1010 which maps to the external port 5555. Starting the proxy can be done similarily:
+```sh
+cd $(REPOROOT)/Lab1_HTTP_server/Proxy
+docker build -t proxy:latest .
+docker run -p <externalport>:<internalport> proxy:latest ./proxy -port=<internalport>
+e.g.
+docker run -p 3333:1222 proxy:latest ./proxy -port=1222
+```
+When dockerizing the programs, the intended use is that the proxy and server are run on different machines.
+
+**IMPORTANT:** If the containers are running on the same system you can use the docker compose file:
+```sh
+docker compose up
+```
+Since they are running on the same system, you will have to use internal docker service names for inter-container communication. 
+See in the Testsuite section how ```testsuite.sh``` can be run to account for this.
+
+
 ## Working requests
 The server only implements GET and POST all other requests will illicit a ```510 Not Implemented```.
 
@@ -65,14 +91,27 @@ ab -v 2 -n 100 -c 20 localhost:1234/test.txt
 ```
 
 ## Testsuite usage
-The server also comes with a testsuite which is run by specifying server ip and port aswell as proxy port (proxy is assumed to run on localhost).
+The server also comes with a testsuite which is run by specifying server ip and port aswell as proxy ip and port. Proxy information can be omitted if only the server is to be tested.
 ```sh
-./testsuite.sh <serverip> <serverport> <proxyport>
+./testsuite.sh <serverip> <serverport> <proxyip> <proxyport>
 ```
 For example
 ```sh
-./testsuite.sh localhost 5555 2222
+./testsuite.sh localhost 5555 localhost 2222
 ```
+
+
+**IMPORTANT:** If the proxy and HTTP server run as docker containers on the same machine then you will have to use the container names for inter-container communication.
+With the current ```docker-compose.yml``` the test can be run as follows:
+```sh
+./testsuite.sh localhost 3333 localhost 5555 same
+```
+where same specifies that the proxy should use internal container name to communicate with the server.
+
+
+### Dependencies
+- curl
+- ab
 
 ## AWS instructions
 
@@ -81,7 +120,7 @@ For example
 chmod ~/.ssh/labsuser.pem 400
 ssh -i ~/.ssh/labsuser.pem ec2-user@<public-ip>
 ```
-- Set aws cli on both local machine and EC2 instance:
+- Set aws cli on both local machine and EC2 instance ctrl+c on AWS details:
 ```sh
 vim ~/.aws/credentials
 esc+dd dG
@@ -92,7 +131,7 @@ ctrl+v
 ```sh
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <user-id>.dkr.ecr.us-east-1.amazonaws.com
 ```
-then do push commands specified on ECR.
+then do pull the latest image from ECR.
 - Pull docker image:
 ```sh
 docker pull <URI>

@@ -15,10 +15,6 @@ fi
 serverip=$1
 serverport=$2
 
-proxyip=$3
-proxyport=$4
-awsserver="23.1.23.1"
-
 out="TestsuiteResults"
 
 rm -rf $out
@@ -58,11 +54,21 @@ printf "${blue}\n## Bench mark server START ##\n\n${normal}"
 ab -v 2 -n 200 -c 20 $serverip:$serverport/test.txt > $out/serverBenchamark.txt
 printf "${blue}\n## Server bench mark END: see $out/serverBenchamark.txt for results ##\n\n\n${normal}"
 
-if [ -z "$3" ]
+if [[ -z "$3" || -z "$4" ]]
     then
     echo "${red}Proxy not specified: Test suite finished"
     exit 0
 fi
+
+proxyip=$3
+proxyport=$4
+
+if [ ! -z "$5" ]
+    then
+    serverip=httpserver
+    echo "${blue}Dockerization on same system test: proxyip set to httpserver"
+fi
+
 
 ## Proxy testing
 printf "${blue}## Begin PROXY test with same server ##\n\n\n${normal}"

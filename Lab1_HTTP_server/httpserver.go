@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -25,14 +24,6 @@ func getArgs() HTTPserver {
 	return HTTPserver{*portvar, "tcp", 0, 0, HTTPTracer{*verbose}, *sync.NewCond(&sync.Mutex{})}
 }
 
-func (server *HTTPserver) increment() {
-	server.serverCondition.L.Lock()
-	if server.numConnections > MAX_CONNECTIONS {
-		log.Fatal("Over max capacity: Exiting")
-	}
-	server.serverCondition.L.Unlock()
-}
-
 func (server *HTTPserver) decrement() {
 	server.serverCondition.L.Lock()
 	server.numConnections--
@@ -42,30 +33,10 @@ func (server *HTTPserver) decrement() {
 	defer server.serverCondition.L.Unlock()
 }
 
-func scaleDeadline(con net.Conn, request *http.Request){
-	if request.Header == nil || request.Method == "GET" {
-		con.SetDeadline(time.Now().Add(time.Millisecond))
-		return
-	}
-	len := request.Header.Get("Content-Length")
-	if len != "" {
-		con.SetDeadline(time.Now().Add(time.Millisecond * 1000))
-		return
-	}
-	parsedLen, err := strconv.Atoi(len)
-	if err != nil {
-		con.SetDeadline(time.Now().Add(time.Millisecond * 1000))
-		return
-	}
-	con.SetDeadline(time.Now().Add(time.Millisecond * time.Duration(parsedLen / 100)))
-	return
-}
-
 func (server *HTTPserver) connectionHandler(con net.Conn) {
-	server.increment()
 
 	defer con.Close()
-
+	con.SetDeadline(time.Now().Add(time.Second * 5))
 	reader := bufio.NewReader(con)
 	request, rerr := http.ReadRequest(reader)
 
@@ -76,8 +47,6 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 		server.decrement()
 		return
 	}
-
-	scaleDeadline(con, request)
 
 	//Init response
 	response := defaultResponse(request)
@@ -95,7 +64,7 @@ func (server *HTTPserver) connectionHandler(con net.Conn) {
 		body.Close()
 	}
 	if _, err := con.Write(writeBuffer.Bytes()); err != nil {
-		log.Print("Write failed")
+		log.Print("Write failed", err)
 	}
 
 	server.decrement()

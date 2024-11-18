@@ -73,3 +73,31 @@ For example
 ```sh
 ./testsuite.sh localhost 5555 2222
 ```
+
+## AWS instructions
+
+- Download labsuser.pem to .ssh/ and chmod 400
+```sh
+chmod ~/.ssh/labsuser.pem 400
+ssh -i ~/.ssh/labsuser.pem ec2-user@<public-ip>
+```
+- Set aws cli on both local machine and EC2 instance:
+```sh
+vim ~/.aws/credentials
+esc+dd dG
+ctrl+v
+```
+- On EC2 instance: fetch newest docker image from ECR
+- Login with docker on EC2 instance
+```sh
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <user-id>.dkr.ecr.us-east-1.amazonaws.com
+```
+then do push commands specified on ECR.
+- Pull docker image:
+```sh
+docker pull <URI>
+```
+- Run with e.g.:
+```sh
+docker run -p 5555:1010 <dockerimg> ./httpserver -port=1010
+```

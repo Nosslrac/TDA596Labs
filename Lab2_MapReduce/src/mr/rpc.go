@@ -6,13 +6,38 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
+type Method int
+
+const (
+	MAP Method = 1
+	REDUCE Method = 2
+	NOWORK Method = 3
+)
+
+type WorkRequest struct {
+	Ready bool
+}
+
+type WorkComplete struct {
+	WorkType Method
+	OutputFile string
+}
+
+type WorkReply struct {
+	WorkType Method
+	Files []string
+	WorkerId int
+}
+
 
 type ExampleArgs struct {
 	X int

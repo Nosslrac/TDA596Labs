@@ -1,10 +1,16 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io"
+	"log"
+	"net/rpc"
+	"os"
+	"strconv"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -12,6 +18,10 @@ import "hash/fnv"
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+type ParseLine struct {
+    Key           string          `json:"Key"`
 }
 
 //
@@ -34,8 +44,95 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	reply := CallGetWork()
+	if reply.WorkType == NOWORK {
+		fmt.Println("No work to do: returning")
+		return
+	}
+	if reply.WorkType == MAP {
+		fmt.Println("Do some MAPPING")
+		DoMap(&reply, mapf)
+	} else {
+		fmt.Println("Do some REDUCING")
+		DoReduce(&reply, reducef)
+	}
+	CallDone(reply.WorkType, "mr-out-" + strconv.Itoa(reply.WorkerId))
+}
 
+func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
+	log.Print("Filename: ", reply.Files[0])
+	file, _ := os.Open(reply.Files[0])
+
+	occurences := make(map[string]int)
+	var keyValuePair ParseLine
+
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		if err := json.Unmarshal([]byte(scanner.Text()), &keyValuePair); err != nil {
+			log.Fatalf("Object poorly formatted %v", err)
+		}
+		occurences[keyValuePair.Key]++
+	}
+	
+	fmt.Println("Occur: ", occurences[keyValuePair.Key])
+}
+
+
+func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) {
+	intermediate := []KeyValue{}
+	for _, filename := range reply.Files {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		kva := mapf(filename, string(content))
+		intermediate = append(intermediate, kva...)
+	}
+	fileName := "mr-out-" + strconv.Itoa(reply.WorkerId)
+	file, err := os.Create(fileName)
+
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+	}
+
+	enc := json.NewEncoder(file)
+	for _, kv := range intermediate{
+	  if err := enc.Encode(&kv); err != nil {
+		log.Fatalf("Couldn't encode %v", fileName)
+	  }
+	}
+
+}
+
+
+func CallGetWork() WorkReply {
+	workReq := WorkRequest{true}
+	workReply := WorkReply{}
+
+	
+	if ok := call("Coordinator.GetWork", &workReq, &workReply); ok {
+		// reply.Y should be 100.
+		fmt.Printf("Method: %v, Files: %v\n", workReply.WorkType, workReply.Files)
+		return workReply
+	} 
+	fmt.Printf("call failed!\n")
+	return WorkReply{NOWORK, nil, -1}
+}
+
+
+func CallDone(workType Method, outFile string) {
+	workComplete := WorkComplete{workType, outFile}
+	if ok := call("Coordinator.WorkDone", &workComplete, nil); ok {
+		fmt.Printf("Work %d done\n", workComplete.WorkType)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
 }
 
 //

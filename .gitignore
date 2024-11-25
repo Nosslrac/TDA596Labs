@@ -31,3 +31,9 @@ go.work.sum
 *.jpg
 *.jpeg
 *.css
+
+# Lab2 MapReduce
+pkg/
+api.key
+.api.key.trimmed
+*-handin.tar.gz

@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -10,38 +9,30 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"strconv"
+	"time"
 )
 
-//
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-//
-// Only interested in the key, Map generates values of 1
-//
-type ParseLine struct {
-    Key           string          `json:"Key"`
-}
+type ByKey []KeyValue
 
-//
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -50,121 +41,129 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	for {
 		reply := CallGetWork()
-		var fileName string
 		if reply.WorkType == NOWORK {
-			fmt.Println("No work to do: returning")
+			//fmt.Println("No work to do: exiting")
 			return
 		}
+		if reply.WorkType == WAIT {
+			time.Sleep(time.Second * 1) // Wait a bit then request work again
+			continue
+		}
 		if reply.WorkType == MAP {
-			//fmt.Println("Do some MAPPING")
-			fileName = DoMap(&reply, mapf)
+			//fmt.Println("Do some MAPPING", reply)
+			DoMap(&reply, mapf)
 		} else {
 			//fmt.Println("Do some REDUCING")
-			fileName = DoReduce(&reply, reducef)
+			DoReduce(&reply, reducef)
 		}
-		CallDone(reply.WorkType, fileName)
 	}
 }
 
-func DoReduce(reply *WorkReply, reducef func(string, []string) string) string {
-	log.Print("Filename: ", reply.Files[0])
-	file, _ := os.Open(reply.Files[0])
+func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
 
-	occurences := make(map[string]int)
-	var keyValuePair ParseLine
+	bufferedFile := []KeyValue{}
 
-	scanner := bufio.NewScanner(file)
+	// Collect all the files into bufferedFile
+	for x := 0; x < reply.NumFiles; x++ {
+		fileName := fmt.Sprintf("mr-%d-%d", x, reply.WorkId)
+		file, _ := os.Open(fileName)
 
-	for scanner.Scan() {
-		if err := json.Unmarshal([]byte(scanner.Text()), &keyValuePair); err != nil {
-			log.Fatalf("Object poorly formatted: %v: %v", scanner.Text(), err)
+		var tmpBuffer []KeyValue
+
+		dec := json.NewDecoder(file)
+		for {
+			var keyValuePair KeyValue
+			if err := dec.Decode(&keyValuePair); err != nil {
+				break
+			}
+			tmpBuffer = append(tmpBuffer, keyValuePair)
 		}
-		occurences[keyValuePair.Key]++
-	}
-	keys := make([]string, len(occurences))
-	index := 0
-	for key := range occurences {
-		keys[index] = key
-		index++
-	}
-	sort.Strings(keys)
 
-	fileName := "mr-out-" + strconv.Itoa(reply.WorkerId)
-	file, err := os.Create(fileName)
+		bufferedFile = append(bufferedFile, tmpBuffer...)
+	}
+
+	sort.Sort(ByKey(bufferedFile))
+
+	length := len(bufferedFile)
+
+	ofileName := fmt.Sprintf("mr-out-%d", reply.WorkId)
+	ofile, _ := os.Create(ofileName)
+
+	for i := 0; i < length; {
+		values := []string{}
+		j := 0
+		for j = i; j < length && bufferedFile[j].Key == bufferedFile[i].Key; j++ {
+			values = append(values, bufferedFile[j].Value)
+		}
+		output := reducef(bufferedFile[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", bufferedFile[i].Key, output)
+		i = j
+	}
+
+	CallDone(reply.WorkType, ofileName, reply.WorkId)
+}
+
+func DoMap(reply *WorkReply, mapf func(string, string) []KeyValue) {
+	intermediate := make([][]KeyValue, reply.NReduce)
+
+	file, err := os.Open(reply.MapFile)
 	if err != nil {
-		log.Fatalf("Cannot create file %v: %v", fileName, err)
+		log.Fatalf("cannot open %v", reply.MapFile)
 	}
-	defer file.Close()
-	
-	for _, key := range keys {
-		fmt.Fprintf(file, "%v %v\n", key, occurences[key])
-	}
-	return fileName
-}
-
-
-func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) string {
-	intermediate := []KeyValue{}
-	for _, filename := range reply.Files {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := io.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		kva := mapf(filename, string(content))
-		intermediate = append(intermediate, kva...)
-	}
-	workId := strconv.Itoa(reply.WorkerId)
-	fileName := "mr-" +  workId + "-" + workId
-	file, err := os.Create(fileName)
-
+	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot open %v", fileName)
+		log.Fatalf("cannot read %v", reply.MapFile)
+	}
+	file.Close()
+
+	for _, keyValuePair := range mapf(reply.MapFile, string(content)) {
+		bucketId := ihash(keyValuePair.Key) % reply.NReduce
+		intermediate[bucketId] = append(intermediate[bucketId], keyValuePair)
 	}
 
-	enc := json.NewEncoder(file)
-	for _, kv := range intermediate{
-	  if err := enc.Encode(&kv); err != nil {
-		log.Fatalf("Couldn't encode %v", fileName)
-	  }
+	//Create a intermediate file for each bucket for this map worker
+	for n := range intermediate {
+		fileName := fmt.Sprintf("mr-%d-%d", reply.WorkId, n)
+		file, err := os.Create(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+		}
+
+		enc := json.NewEncoder(file)
+		for _, kv := range intermediate[n] {
+			if err := enc.Encode(&kv); err != nil {
+				log.Fatalf("Couldn't encode %v", fileName)
+			}
+		}
 	}
-	return fileName
+	CallDone(reply.WorkType, "", reply.WorkId)
 }
-
 
 func CallGetWork() WorkReply {
 	workReq := WorkRequest{true}
 	workReply := WorkReply{}
 
-	
 	if ok := call("Coordinator.GetWork", &workReq, &workReply); ok {
 		// reply.Y should be 100.
 		//fmt.Printf("Method: %v, Files: %v\n", workReply.WorkType, workReply.Files)
 		return workReply
-	} 
+	}
 	fmt.Printf("call failed!\n")
-	return WorkReply{NOWORK, nil, -1}
+	return WorkReply{NOWORK, -1, -1, -1, ""}
 }
 
-
-func CallDone(workType Method, outFile string) {
-	workComplete := WorkComplete{workType, outFile}
+func CallDone(workType Method, outFile string, workId int) {
+	workComplete := WorkComplete{workType, workId, outFile}
 	if ok := call("Coordinator.WorkDone", &workComplete, nil); ok {
-		fmt.Printf("Work %d done\n", workComplete.WorkType)
+		//fmt.Printf("Work %d done\n", workComplete.WorkType)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
 }
 
-//
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument and reply types are defined in rpc.go.
-//
 func CallExample() {
 
 	// declare an argument structure.
@@ -189,11 +188,9 @@ func CallExample() {
 	}
 }
 
-//
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()

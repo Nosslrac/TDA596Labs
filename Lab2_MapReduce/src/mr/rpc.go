@@ -11,16 +11,15 @@ import (
 	"strconv"
 )
 
-//
 // example to show how to declare the arguments
 // and reply for an RPC.
-//
 type Method int
 
 const (
-	MAP Method = 1
-	REDUCE Method = 2
-	NOWORK Method = 3
+	MAP    Method = 1 //Do map
+	REDUCE Method = 2 //Do reduce
+	WAIT   Method = 3 //Standby, might be more work later
+	NOWORK Method = 4 //Quit no more work
 )
 
 type WorkRequest struct {
@@ -28,16 +27,19 @@ type WorkRequest struct {
 }
 
 type WorkComplete struct {
-	WorkType Method
+	WorkType   Method
+	WorkId     int
 	OutputFile string
 }
 
 type WorkReply struct {
-	WorkType Method
-	Files []string
-	WorkerId int
-}
+	WorkType Method // MAP, REDUCE, WAIT, NOWORK
+	WorkId   int
+	NumFiles int
+	NReduce  int
 
+	MapFile string
+}
 
 type ExampleArgs struct {
 	X int
@@ -48,7 +50,6 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

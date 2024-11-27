@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,114 +11,117 @@ import (
 	"time"
 )
 
+const TIMEOUT = 10
 
 type Coordinator struct {
 	// Your definitions here.
 	// Public
-	CoordMutex sync.Mutex
-	IsDone bool
-	mapProgress []int8
-	reduceProgress []int8
+	CoordMutex     sync.Mutex
+	IsDone         bool
+	Nreduce        int
+	mapperTimeout  []int
+	reducerTimeout []int
 
 	//Private
-	mapper MapTracker
+	mapper  MapTracker
 	reducer ReduceTracker
-
-	
 }
 
 type ReduceTracker struct {
-	files []string
-	currentJob int
-	filesPerJob int
-	jobsWithOneExtra int
-	totFiles int
-	WorkCounter int
+	currentJob        int
+	completedReducers []bool
 }
 
 type MapTracker struct {
-	files []string
-	currentJob int
-	filesPerJob int
-	jobsWithOneExtra int
-	totFiles int
-	WorkCounter int
+	files            []string
+	numFiles         int
+	currentJob       int
+	completedMappers []bool
 }
 
-func (c *Coordinator) serverHandler() {
-	for {
-		c.CoordMutex.Lock()
-		if c.mapper.isDone() && c.reducer.isDone() {
-			c.IsDone = true
-		}
-		
-		c.CoordMutex.Unlock()
-		time.Sleep(time.Second * 1)
-	}
+// Need to be done in critical section
+func (reducer *ReduceTracker) reducerComplete(reducerId int) {
+	reducer.completedReducers[reducerId] = true
 }
-
 
 func (reducer *ReduceTracker) isDone() bool {
-	return reducer.currentJob == reducer.totFiles
-}
-
-func (reducer *ReduceTracker) addFile(file string) {
-	reducer.files[reducer.totFiles] = file
-	reducer.totFiles++
-}
-
-func (reducer *ReduceTracker) getReduceJob(reply *WorkReply) {
-	if reducer.currentJob < reducer.totFiles {
-		reply.Files = []string{reducer.files[reducer.currentJob]}
-		reducer.currentJob++
+	for _, val := range reducer.completedReducers {
+		if !val {
+			return false
+		}
 	}
-	reply.WorkerId = reducer.WorkCounter
-	reducer.WorkCounter++
+	return true
+}
+
+// Need to be done in critical section
+func (mapper *MapTracker) mapperComplete(mapperId int) {
+	mapper.completedMappers[mapperId] = true
 }
 
 func (mapper *MapTracker) isDone() bool {
-	return mapper.currentJob == mapper.totFiles
+	for _, val := range mapper.completedMappers {
+		if !val {
+			return false
+		}
+	}
+	return true
 }
 
-func (mapper *MapTracker) getMapJob(reply *WorkReply) {
-	start := mapper.currentJob
-	end := mapper.currentJob + mapper.filesPerJob
-	if mapper.jobsWithOneExtra > 0 {
-		mapper.jobsWithOneExtra--
-		end++
+func (c *Coordinator) getMapJob(reply *WorkReply) {
+	if c.mapper.currentJob == c.mapper.numFiles {
+		// Worker should wait or replace timed out mapper
+		// if c.retryMapper(reply) {
+		// 	// Resend other mappers work
+		// 	return
+		// }
+		reply.WorkType = WAIT
+		return
 	}
-	// Update Coordinator
-	mapper.currentJob = end //End is not included in range
-
-	if end > mapper.totFiles {
-		log.Fatal("Coordinator corrupted: list out of bounds")
-	}
-	
 	reply.WorkType = MAP
-	reply.Files = mapper.files[start : end]
-	reply.WorkerId = mapper.WorkCounter
-	mapper.WorkCounter++
+	reply.MapFile = c.mapper.files[c.mapper.currentJob]
+	reply.WorkId = c.mapper.currentJob
+	reply.NReduce = c.Nreduce
+	reply.NumFiles = c.mapper.numFiles
+	c.mapper.currentJob++
+	//fmt.Print("Reply to map: ", reply)
 }
 
+func (c *Coordinator) getReduceJob(reply *WorkReply) {
+	// Check for time out from other reducers
+	if c.reducer.currentJob == c.Nreduce {
+		// if c.retryReducer(reply) {
+		// 	return
+		// }
+		reply.WorkType = WAIT
+		return
+	}
+	reply.WorkType = REDUCE
+	reply.WorkId = c.reducer.currentJob
+	reply.NumFiles = c.mapper.numFiles
+	reply.NReduce = c.Nreduce
+	c.reducer.currentJob++
+	//log.Println("Reduce job already allocated, WAIT for failures")
+}
 
 func (c *Coordinator) getNextJob(reply *WorkReply) {
 	c.CoordMutex.Lock()
 	if c.mapper.isDone() && c.reducer.isDone() {
+		//fmt.Println("Doing map")
 		reply.WorkType = NOWORK
 		c.CoordMutex.Unlock()
 		return
 	}
 
 	if c.mapper.isDone() {
-		c.reducer.getReduceJob(reply)
+		//fmt.Println("Doing reduce")
+		c.getReduceJob(reply)
 		c.CoordMutex.Unlock()
 		return
 	}
-	c.mapper.getMapJob(reply)
+	//fmt.Println("Doing map")
+	c.getMapJob(reply)
 	c.CoordMutex.Unlock()
 }
-
-
 
 func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
 	c.getNextJob(reply)
@@ -125,34 +129,94 @@ func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
 }
 
 func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
-	log.Printf("Work done file %v, Method: %v\n", complete.OutputFile, complete.WorkType)
+	//log.Printf("Work done file %v, Method: %v\n", complete.OutputFile, complete.WorkType)
 	c.CoordMutex.Lock()
 	if complete.WorkType == MAP {
-		c.mapProgress[reply.WorkerId] = 1
-		c.reducer.addFile(complete.OutputFile)
+		c.mapper.mapperComplete(complete.WorkId) //Work id needed later maybe
 	} else if complete.WorkType == REDUCE {
-		c.reduceProgress[reply.WorkerId] = 1
+		c.reducer.reducerComplete(complete.WorkId)
 	}
 	c.CoordMutex.Unlock()
 	return nil
 }
 
+func (c *Coordinator) serverHandler() {
+	//i := 0
+	for {
+		c.CoordMutex.Lock()
+		mapperDone := c.mapper.isDone()
+		reducerDone := c.mapper.isDone()
+		if mapperDone && reducerDone {
+			c.IsDone = true
+		}
 
-// Your code here -- RPC handlers for the worker to call.
+		// if !mapperDone {
+		// 	c.updateMapper()
+		// } else {
+		// 	c.updateReducer()
+		// }
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+		// i = (i + 1) % 3
+		// if i == 0 {
+		// 	c.checkStatus()
+		// }
+		c.CoordMutex.Unlock()
+		time.Sleep(time.Second * 1)
+	}
 }
 
-//
+func (c *Coordinator) retryMapper(reply *WorkReply) bool {
+	for mapperId := range c.mapperTimeout {
+		if c.mapperTimeout[mapperId] >= TIMEOUT {
+			c.mapperTimeout[mapperId] = 0
+			reply.WorkType = MAP
+			reply.MapFile = c.mapper.files[mapperId]
+			reply.WorkId = mapperId
+			reply.NReduce = c.Nreduce
+			reply.NumFiles = c.mapper.numFiles
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Coordinator) retryReducer(reply *WorkReply) bool {
+	for reducerId := range c.reducerTimeout {
+		if c.reducerTimeout[reducerId] >= TIMEOUT {
+			c.reducerTimeout[reducerId] = 0
+			reply.WorkType = REDUCE
+			reply.WorkId = reducerId
+			reply.NumFiles = c.mapper.numFiles
+			reply.NReduce = c.Nreduce
+			return true
+		}
+	}
+	return false
+}
+
+// Keep track of timeouts
+func (c *Coordinator) updateMapper() {
+	for n := range c.mapperTimeout {
+		if !c.mapper.completedMappers[n] {
+			c.mapperTimeout[n]++
+		}
+	}
+}
+
+// Keep track of timeouts
+func (c *Coordinator) updateReducer() {
+	for n := range c.reducerTimeout {
+		if !c.reducer.completedReducers[n] {
+			c.reducerTimeout[n]++
+		}
+	}
+}
+
+func (c *Coordinator) checkStatus() {
+	fmt.Printf("Progress status: %v\n---Mappers: %v\n---Reducers: %v\n", c.IsDone, c.mapper.completedMappers, c.reducer.completedReducers)
+}
+
 // start a thread that listens for RPCs from worker.go
-//
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -166,34 +230,28 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
-//
 func (c *Coordinator) Done() bool {
 	// Your code here.
 	return c.IsDone
 }
 
-//
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
-//
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	numFiles := len(files)
-	workersWithOneExtra := numFiles % nReduce
-	filesPerWorker := numFiles / nReduce
-	workerFiles := numFiles
 
-	log.Printf("Coordinator setup: files %v, nReduce %d, numFiles: %d, %d, %d\n", files, nReduce, numFiles, workersWithOneExtra, filesPerWorker)
+	//log.Printf("Coordinator setup: files %v, nReduce %d, numFiles: %d\n", files, nReduce, numFiles)
 	c := Coordinator{
 		sync.Mutex{},
 		false,
-		make([]int8, workerFiles),
-		make([]int8, workerFiles),
-		MapTracker{files, 0, filesPerWorker, workersWithOneExtra, numFiles, 1},
-		ReduceTracker{make([]string, workerFiles), 0, filesPerWorker, workersWithOneExtra, 0, 1},
+		nReduce,
+		make([]int, numFiles),
+		make([]int, nReduce),
+		MapTracker{files, numFiles, 0, make([]bool, numFiles)},
+		ReduceTracker{0, make([]bool, nReduce)},
 	}
 
 	// Your code here.

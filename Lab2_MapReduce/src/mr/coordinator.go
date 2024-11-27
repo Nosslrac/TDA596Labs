@@ -70,10 +70,10 @@ func (mapper *MapTracker) isDone() bool {
 func (c *Coordinator) getMapJob(reply *WorkReply) {
 	if c.mapper.currentJob == c.mapper.numFiles {
 		// Worker should wait or replace timed out mapper
-		// if c.retryMapper(reply) {
-		// 	// Resend other mappers work
-		// 	return
-		// }
+		if c.retryMapper(reply) {
+			// Resend other mappers work
+			return
+		}
 		reply.WorkType = WAIT
 		return
 	}
@@ -82,16 +82,16 @@ func (c *Coordinator) getMapJob(reply *WorkReply) {
 	reply.WorkId = c.mapper.currentJob
 	reply.NReduce = c.Nreduce
 	reply.NumFiles = c.mapper.numFiles
+	c.mapperTimeout[c.mapper.currentJob] = 1 //Start timeout timer
 	c.mapper.currentJob++
-	//fmt.Print("Reply to map: ", reply)
 }
 
 func (c *Coordinator) getReduceJob(reply *WorkReply) {
 	// Check for time out from other reducers
 	if c.reducer.currentJob == c.Nreduce {
-		// if c.retryReducer(reply) {
-		// 	return
-		// }
+		if c.retryReducer(reply) {
+			return
+		}
 		reply.WorkType = WAIT
 		return
 	}
@@ -99,14 +99,13 @@ func (c *Coordinator) getReduceJob(reply *WorkReply) {
 	reply.WorkId = c.reducer.currentJob
 	reply.NumFiles = c.mapper.numFiles
 	reply.NReduce = c.Nreduce
+	c.reducerTimeout[c.reducer.currentJob] = 1 // Start timeout timer
 	c.reducer.currentJob++
-	//log.Println("Reduce job already allocated, WAIT for failures")
 }
 
 func (c *Coordinator) getNextJob(reply *WorkReply) {
 	c.CoordMutex.Lock()
-	if c.mapper.isDone() && c.reducer.isDone() {
-		//fmt.Println("Doing map")
+	if c.IsDone {
 		reply.WorkType = NOWORK
 		c.CoordMutex.Unlock()
 		return
@@ -141,25 +140,19 @@ func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
 }
 
 func (c *Coordinator) serverHandler() {
-	//i := 0
 	for {
 		c.CoordMutex.Lock()
 		mapperDone := c.mapper.isDone()
-		reducerDone := c.mapper.isDone()
+		reducerDone := c.reducer.isDone()
 		if mapperDone && reducerDone {
 			c.IsDone = true
 		}
 
-		// if !mapperDone {
-		// 	c.updateMapper()
-		// } else {
-		// 	c.updateReducer()
-		// }
-
-		// i = (i + 1) % 3
-		// if i == 0 {
-		// 	c.checkStatus()
-		// }
+		if !mapperDone {
+			c.updateMapper()
+		} else {
+			c.updateReducer()
+		}
 		c.CoordMutex.Unlock()
 		time.Sleep(time.Second * 1)
 	}
@@ -167,8 +160,8 @@ func (c *Coordinator) serverHandler() {
 
 func (c *Coordinator) retryMapper(reply *WorkReply) bool {
 	for mapperId := range c.mapperTimeout {
-		if c.mapperTimeout[mapperId] >= TIMEOUT {
-			c.mapperTimeout[mapperId] = 0
+		if c.mapperTimeout[mapperId] > TIMEOUT {
+			c.mapperTimeout[mapperId] = 1
 			reply.WorkType = MAP
 			reply.MapFile = c.mapper.files[mapperId]
 			reply.WorkId = mapperId
@@ -182,8 +175,8 @@ func (c *Coordinator) retryMapper(reply *WorkReply) bool {
 
 func (c *Coordinator) retryReducer(reply *WorkReply) bool {
 	for reducerId := range c.reducerTimeout {
-		if c.reducerTimeout[reducerId] >= TIMEOUT {
-			c.reducerTimeout[reducerId] = 0
+		if c.reducerTimeout[reducerId] > TIMEOUT {
+			c.reducerTimeout[reducerId] = 1
 			reply.WorkType = REDUCE
 			reply.WorkId = reducerId
 			reply.NumFiles = c.mapper.numFiles
@@ -197,7 +190,7 @@ func (c *Coordinator) retryReducer(reply *WorkReply) bool {
 // Keep track of timeouts
 func (c *Coordinator) updateMapper() {
 	for n := range c.mapperTimeout {
-		if !c.mapper.completedMappers[n] {
+		if !c.mapper.completedMappers[n] && c.mapperTimeout[n] > 0 {
 			c.mapperTimeout[n]++
 		}
 	}
@@ -206,14 +199,15 @@ func (c *Coordinator) updateMapper() {
 // Keep track of timeouts
 func (c *Coordinator) updateReducer() {
 	for n := range c.reducerTimeout {
-		if !c.reducer.completedReducers[n] {
+		if !c.reducer.completedReducers[n] && c.reducerTimeout[n] > 0 {
 			c.reducerTimeout[n]++
 		}
 	}
 }
 
 func (c *Coordinator) checkStatus() {
-	fmt.Printf("Progress status: %v\n---Mappers: %v\n---Reducers: %v\n", c.IsDone, c.mapper.completedMappers, c.reducer.completedReducers)
+	fmt.Printf("Timeout mappers: %v\nTimeout reducers: %v\n",
+		c.mapperTimeout, c.reducerTimeout)
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -234,6 +228,10 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	// Your code here.
+	// if c.IsDone {
+	// 	c.checkStatus()
+	// }
+
 	return c.IsDone
 }
 

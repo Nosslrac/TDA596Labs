@@ -36,9 +36,7 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
+	// Get more work as long as there is work
 	for {
 		reply := CallGetWork()
 		if reply.WorkType == NOWORK {
@@ -50,7 +48,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		}
 		if reply.WorkType == MAP {
-			//fmt.Println("Do some MAPPING", reply)
+			//fmt.Println("Do some MAPPING", reply.WorkId)
 			DoMap(&reply, mapf)
 		} else {
 			//fmt.Println("Do some REDUCING")
@@ -61,9 +59,8 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
 
-	bufferedFile := []KeyValue{}
-
 	// Collect all the files into bufferedFile
+	bufferedFile := []KeyValue{}
 	for x := 0; x < reply.NumFiles; x++ {
 		fileName := fmt.Sprintf("mr-%d-%d", x, reply.WorkId)
 		file, _ := os.Open(fileName)
@@ -78,20 +75,20 @@ func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
 			}
 			tmpBuffer = append(tmpBuffer, keyValuePair)
 		}
-
 		bufferedFile = append(bufferedFile, tmpBuffer...)
 	}
 
+	// Sort the bucket
 	sort.Sort(ByKey(bufferedFile))
-
-	length := len(bufferedFile)
 
 	ofileName := fmt.Sprintf("mr-out-%d", reply.WorkId)
 	ofile, _ := os.Create(ofileName)
 
+	length := len(bufferedFile)
 	for i := 0; i < length; {
 		values := []string{}
 		j := 0
+		// Since the bucket is sorted all keys of same kind will be consequtive
 		for j = i; j < length && bufferedFile[j].Key == bufferedFile[i].Key; j++ {
 			values = append(values, bufferedFile[j].Value)
 		}
@@ -144,20 +141,15 @@ func CallGetWork() WorkReply {
 	workReply := WorkReply{}
 
 	if ok := call("Coordinator.GetWork", &workReq, &workReply); ok {
-		// reply.Y should be 100.
-		//fmt.Printf("Method: %v, Files: %v\n", workReply.WorkType, workReply.Files)
 		return workReply
 	}
-	fmt.Printf("call failed!\n")
 	return WorkReply{NOWORK, -1, -1, -1, ""}
 }
 
 func CallDone(workType Method, outFile string, workId int) {
 	workComplete := WorkComplete{workType, workId, outFile}
-	if ok := call("Coordinator.WorkDone", &workComplete, nil); ok {
-		//fmt.Printf("Work %d done\n", workComplete.WorkType)
-	} else {
-		fmt.Printf("call failed!\n")
+	if ok := call("Coordinator.WorkDone", &workComplete, nil); !ok {
+		fmt.Printf("Call failed: Coordinator not responding\n")
 	}
 }
 
@@ -196,7 +188,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		// log.Fatal("dialing:", err)
+		return false
 	}
 	defer c.Close()
 

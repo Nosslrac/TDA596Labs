@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
+	"time"
 )
 
 
 type Coordinator struct {
 	// Your definitions here.
 	// Public
+	CoordMutex sync.Mutex
 	IsDone bool
 	mapProgress []int8
 	reduceProgress []int8
@@ -41,6 +44,18 @@ type MapTracker struct {
 	WorkCounter int
 }
 
+func (c *Coordinator) serverHandler() {
+	for {
+		c.CoordMutex.Lock()
+		if c.mapper.isDone() && c.reducer.isDone() {
+			c.IsDone = true
+		}
+		
+		c.CoordMutex.Unlock()
+		time.Sleep(time.Second * 1)
+	}
+}
+
 
 func (reducer *ReduceTracker) isDone() bool {
 	return reducer.currentJob == reducer.totFiles
@@ -53,9 +68,9 @@ func (reducer *ReduceTracker) addFile(file string) {
 
 func (reducer *ReduceTracker) getReduceJob(reply *WorkReply) {
 	if reducer.currentJob < reducer.totFiles {
-		reply.Files = append(reply.Files, reducer.files[reducer.currentJob])
+		reply.Files = []string{reducer.files[reducer.currentJob]}
+		reducer.currentJob++
 	}
-	
 	reply.WorkerId = reducer.WorkCounter
 	reducer.WorkCounter++
 }
@@ -86,36 +101,39 @@ func (mapper *MapTracker) getMapJob(reply *WorkReply) {
 
 
 func (c *Coordinator) getNextJob(reply *WorkReply) {
+	c.CoordMutex.Lock()
 	if c.mapper.isDone() && c.reducer.isDone() {
 		reply.WorkType = NOWORK
+		c.CoordMutex.Unlock()
 		return
 	}
 
 	if c.mapper.isDone() {
 		c.reducer.getReduceJob(reply)
+		c.CoordMutex.Unlock()
 		return
 	}
 	c.mapper.getMapJob(reply)
+	c.CoordMutex.Unlock()
 }
 
 
 
 func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
-	log.Print("Worker requesting work, let us give them some work")
 	c.getNextJob(reply)
 	return nil
 }
 
 func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
 	log.Printf("Work done file %v, Method: %v\n", complete.OutputFile, complete.WorkType)
+	c.CoordMutex.Lock()
 	if complete.WorkType == MAP {
 		c.mapProgress[reply.WorkerId] = 1
 		c.reducer.addFile(complete.OutputFile)
 	} else if complete.WorkType == REDUCE {
 		c.reduceProgress[reply.WorkerId] = 1
 	}
-	
-	
+	c.CoordMutex.Unlock()
 	return nil
 }
 
@@ -170,6 +188,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	log.Printf("Coordinator setup: files %v, nReduce %d, numFiles: %d, %d, %d\n", files, nReduce, numFiles, workersWithOneExtra, filesPerWorker)
 	c := Coordinator{
+		sync.Mutex{},
 		false,
 		make([]int8, workerFiles),
 		make([]int8, workerFiles),
@@ -179,5 +198,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	c.server()
+	go c.serverHandler() // start server handling
 	return &c
 }

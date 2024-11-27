@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
 )
 
@@ -20,6 +21,9 @@ type KeyValue struct {
 	Value string
 }
 
+//
+// Only interested in the key, Map generates values of 1
+//
 type ParseLine struct {
     Key           string          `json:"Key"`
 }
@@ -44,22 +48,25 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	reply := CallGetWork()
-	if reply.WorkType == NOWORK {
-		fmt.Println("No work to do: returning")
-		return
+	for {
+		reply := CallGetWork()
+		var fileName string
+		if reply.WorkType == NOWORK {
+			fmt.Println("No work to do: returning")
+			return
+		}
+		if reply.WorkType == MAP {
+			//fmt.Println("Do some MAPPING")
+			fileName = DoMap(&reply, mapf)
+		} else {
+			//fmt.Println("Do some REDUCING")
+			fileName = DoReduce(&reply, reducef)
+		}
+		CallDone(reply.WorkType, fileName)
 	}
-	if reply.WorkType == MAP {
-		fmt.Println("Do some MAPPING")
-		DoMap(&reply, mapf)
-	} else {
-		fmt.Println("Do some REDUCING")
-		DoReduce(&reply, reducef)
-	}
-	CallDone(reply.WorkType, "mr-out-" + strconv.Itoa(reply.WorkerId))
 }
 
-func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
+func DoReduce(reply *WorkReply, reducef func(string, []string) string) string {
 	log.Print("Filename: ", reply.Files[0])
 	file, _ := os.Open(reply.Files[0])
 
@@ -70,16 +77,33 @@ func DoReduce(reply *WorkReply, reducef func(string, []string) string) {
 
 	for scanner.Scan() {
 		if err := json.Unmarshal([]byte(scanner.Text()), &keyValuePair); err != nil {
-			log.Fatalf("Object poorly formatted %v", err)
+			log.Fatalf("Object poorly formatted: %v: %v", scanner.Text(), err)
 		}
 		occurences[keyValuePair.Key]++
 	}
+	keys := make([]string, len(occurences))
+	index := 0
+	for key := range occurences {
+		keys[index] = key
+		index++
+	}
+	sort.Strings(keys)
+
+	fileName := "mr-out-" + strconv.Itoa(reply.WorkerId)
+	file, err := os.Create(fileName)
+	if err != nil {
+		log.Fatalf("Cannot create file %v: %v", fileName, err)
+	}
+	defer file.Close()
 	
-	fmt.Println("Occur: ", occurences[keyValuePair.Key])
+	for _, key := range keys {
+		fmt.Fprintf(file, "%v %v\n", key, occurences[key])
+	}
+	return fileName
 }
 
 
-func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) {
+func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) string {
 	intermediate := []KeyValue{}
 	for _, filename := range reply.Files {
 		file, err := os.Open(filename)
@@ -94,7 +118,8 @@ func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) {
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
 	}
-	fileName := "mr-out-" + strconv.Itoa(reply.WorkerId)
+	workId := strconv.Itoa(reply.WorkerId)
+	fileName := "mr-" +  workId + "-" + workId
 	file, err := os.Create(fileName)
 
 	if err != nil {
@@ -107,7 +132,7 @@ func DoMap(reply *WorkReply, mapf func(string, string)[]KeyValue) {
 		log.Fatalf("Couldn't encode %v", fileName)
 	  }
 	}
-
+	return fileName
 }
 
 
@@ -118,7 +143,7 @@ func CallGetWork() WorkReply {
 	
 	if ok := call("Coordinator.GetWork", &workReq, &workReply); ok {
 		// reply.Y should be 100.
-		fmt.Printf("Method: %v, Files: %v\n", workReply.WorkType, workReply.Files)
+		//fmt.Printf("Method: %v, Files: %v\n", workReply.WorkType, workReply.Files)
 		return workReply
 	} 
 	fmt.Printf("call failed!\n")

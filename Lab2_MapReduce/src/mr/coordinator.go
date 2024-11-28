@@ -231,8 +231,10 @@ func (c *Coordinator) Done() bool {
 	// if c.IsDone {
 	// 	c.checkStatus()
 	// }
-
-	return c.IsDone
+	c.CoordMutex.Lock()
+	retValue := c.IsDone
+	c.CoordMutex.Unlock()
+	return retValue
 }
 
 // create a Coordinator.

@@ -2,6 +2,7 @@ package mr
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,11 +17,14 @@ const TIMEOUT = 10
 type Coordinator struct {
 	// Your definitions here.
 	// Public
+	IpAddress      net.IP
 	CoordMutex     sync.Mutex
 	IsDone         bool
 	Nreduce        int
 	mapperTimeout  []int
 	reducerTimeout []int
+	Workers        map[int]string //JobIds -> ipaddresses
+	NextWorkerId   int
 
 	//Private
 	mapper  MapTracker
@@ -29,101 +33,106 @@ type Coordinator struct {
 
 type ReduceTracker struct {
 	currentJob        int
-	completedReducers []bool
+	completedReducers []int
+	reduceWorkerIds   map[int]bool
 }
 
 type MapTracker struct {
 	files            []string
 	numFiles         int
 	currentJob       int
-	completedMappers []bool
-}
-
-// Need to be done in critical section
-func (reducer *ReduceTracker) reducerComplete(reducerId int) {
-	reducer.completedReducers[reducerId] = true
+	completedMappers []int
+	mapWorkerIds     map[int]bool
 }
 
 func (reducer *ReduceTracker) isDone() bool {
 	for _, val := range reducer.completedReducers {
-		if !val {
+		if val == 0 {
 			return false
 		}
 	}
 	return true
-}
-
-// Need to be done in critical section
-func (mapper *MapTracker) mapperComplete(mapperId int) {
-	mapper.completedMappers[mapperId] = true
 }
 
 func (mapper *MapTracker) isDone() bool {
 	for _, val := range mapper.completedMappers {
-		if !val {
+		if val == 0 {
 			return false
 		}
 	}
 	return true
 }
 
-func (c *Coordinator) getMapJob(reply *WorkReply) {
+func (c *Coordinator) getMapJob(reply *WorkReply, workerId int) {
 	if c.mapper.currentJob == c.mapper.numFiles {
 		// Worker should wait or replace timed out mapper
-		if c.retryMapper(reply) {
+		if c.retryMapper(reply, workerId) {
 			// Resend other mappers work
 			return
 		}
 		reply.WorkType = WAIT
 		return
 	}
+	c.mapper.mapWorkerIds[workerId] = true // Worker marked as having produced mapped content
+
 	reply.WorkType = MAP
-	reply.MapFile = c.mapper.files[c.mapper.currentJob]
-	reply.WorkId = c.mapper.currentJob
+	reply.MapFileName = c.mapper.files[c.mapper.currentJob]
+	reply.MapFileContent = c.getMapFileContent(c.mapper.currentJob)
+	reply.JobId = c.mapper.currentJob
 	reply.NReduce = c.Nreduce
 	reply.NumFiles = c.mapper.numFiles
 	c.mapperTimeout[c.mapper.currentJob] = 1 //Start timeout timer
 	c.mapper.currentJob++
 }
 
-func (c *Coordinator) getReduceJob(reply *WorkReply) {
+func (c *Coordinator) getReduceJob(reply *WorkReply, workerId int) {
 	// Check for time out from other reducers
 	if c.reducer.currentJob == c.Nreduce {
-		if c.retryReducer(reply) {
+		if c.retryReducer(reply, workerId) {
 			return
 		}
 		reply.WorkType = WAIT
 		return
 	}
+	c.reducer.reduceWorkerIds[workerId] = true
+
 	reply.WorkType = REDUCE
-	reply.WorkId = c.reducer.currentJob
+	reply.JobId = c.reducer.currentJob
 	reply.NumFiles = c.mapper.numFiles
 	reply.NReduce = c.Nreduce
+	reply.ReduceFileLocations = c.getReduceFileLocations()
 	c.reducerTimeout[c.reducer.currentJob] = 1 // Start timeout timer
 	c.reducer.currentJob++
 }
 
-func (c *Coordinator) getNextJob(reply *WorkReply) {
+func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
 	c.CoordMutex.Lock()
 	if c.IsDone {
 		reply.WorkType = NOWORK
 		c.CoordMutex.Unlock()
-		return
+		return nil
 	}
 
 	if c.mapper.isDone() {
 		//fmt.Println("Doing reduce")
-		c.getReduceJob(reply)
+		c.getReduceJob(reply, request.WorkerId)
 		c.CoordMutex.Unlock()
-		return
+		return nil
 	}
 	//fmt.Println("Doing map")
-	c.getMapJob(reply)
+	c.getMapJob(reply, request.WorkerId)
 	c.CoordMutex.Unlock()
+	return nil
 }
 
-func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
-	c.getNextJob(reply)
+func (c *Coordinator) DoSetup(request *SetupRequest, reply *WorkSetup) error {
+	c.CoordMutex.Lock()
+	reply.WorkerId = c.NextWorkerId
+	c.Workers[c.NextWorkerId] = request.IPAddress.String()
+	c.NextWorkerId++
+	reply.NReduce = c.Nreduce
+	reply.NumFiles = c.mapper.numFiles
+	c.CoordMutex.Unlock()
 	return nil
 }
 
@@ -131,9 +140,9 @@ func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
 	//log.Printf("Work done file %v, Method: %v\n", complete.OutputFile, complete.WorkType)
 	c.CoordMutex.Lock()
 	if complete.WorkType == MAP {
-		c.mapper.mapperComplete(complete.WorkId) //Work id needed later maybe
+		c.mapper.completedMappers[complete.JobId] = complete.WorkerId
 	} else if complete.WorkType == REDUCE {
-		c.reducer.reducerComplete(complete.WorkId)
+		c.reducer.completedReducers[complete.JobId] = complete.WorkerId
 	}
 	c.CoordMutex.Unlock()
 	return nil
@@ -146,6 +155,7 @@ func (c *Coordinator) serverHandler() {
 		reducerDone := c.reducer.isDone()
 		if mapperDone && reducerDone {
 			c.IsDone = true
+			fmt.Println("Workers: ", c.Workers)
 		}
 
 		if !mapperDone {
@@ -158,13 +168,20 @@ func (c *Coordinator) serverHandler() {
 	}
 }
 
-func (c *Coordinator) retryMapper(reply *WorkReply) bool {
-	for mapperId := range c.mapperTimeout {
-		if c.mapperTimeout[mapperId] > TIMEOUT {
-			c.mapperTimeout[mapperId] = 1
+func (c *Coordinator) retryMapper(reply *WorkReply, workerId int) bool {
+	for jobId := range c.mapperTimeout {
+		if c.mapperTimeout[jobId] > TIMEOUT {
+			c.mapperTimeout[jobId] = 1 // Reset timeout
+			failedWorker := c.mapper.completedMappers[jobId]
+			c.clearMapDeadWorker(failedWorker)          // Clear previous mappers work
+			delete(c.mapper.mapWorkerIds, failedWorker) // Remove active workers
+			delete(c.Workers, failedWorker)             // Remove from worker list
+			c.mapper.mapWorkerIds[workerId] = true      // Add new worker if not present
+
 			reply.WorkType = MAP
-			reply.MapFile = c.mapper.files[mapperId]
-			reply.WorkId = mapperId
+			reply.MapFileName = c.mapper.files[jobId]
+			reply.MapFileContent = c.getMapFileContent(jobId)
+			reply.JobId = jobId
 			reply.NReduce = c.Nreduce
 			reply.NumFiles = c.mapper.numFiles
 			return true
@@ -173,24 +190,48 @@ func (c *Coordinator) retryMapper(reply *WorkReply) bool {
 	return false
 }
 
-func (c *Coordinator) retryReducer(reply *WorkReply) bool {
-	for reducerId := range c.reducerTimeout {
-		if c.reducerTimeout[reducerId] > TIMEOUT {
-			c.reducerTimeout[reducerId] = 1
+func (c *Coordinator) retryReducer(reply *WorkReply, workerId int) bool {
+	for jobId := range c.reducerTimeout {
+		if c.reducerTimeout[jobId] > TIMEOUT || c.reducer.completedReducers[jobId] == 0 {
+			c.reducerTimeout[jobId] = 1
+
+			failedWorker := c.reducer.completedReducers[jobId]
+			delete(c.reducer.reduceWorkerIds, failedWorker) // Clear the job that has been done by failed worker
+			delete(c.Workers, failedWorker)                 // Remove from worker list
+			c.reducer.reduceWorkerIds[workerId] = true
+
+			reply.ReduceFileLocations = c.getReduceFileLocations()
+
 			reply.WorkType = REDUCE
-			reply.WorkId = reducerId
+			reply.JobId = jobId
 			reply.NumFiles = c.mapper.numFiles
 			reply.NReduce = c.Nreduce
 			return true
 		}
 	}
 	return false
+}
+
+func (c *Coordinator) clearMapDeadWorker(workerId int) {
+	for i := range c.mapper.completedMappers {
+		if c.mapper.completedMappers[i] == workerId {
+			c.mapper.completedMappers[i] = 0 // Reset for new work
+		}
+	}
+}
+
+func (c *Coordinator) clearReduceDeadWorker(workerId int) {
+	for i := range c.reducer.completedReducers {
+		if c.reducer.completedReducers[i] == workerId {
+			c.reducer.completedReducers[i] = 0 // Reset for new work
+		}
+	}
 }
 
 // Keep track of timeouts
 func (c *Coordinator) updateMapper() {
 	for n := range c.mapperTimeout {
-		if !c.mapper.completedMappers[n] && c.mapperTimeout[n] > 0 {
+		if c.mapper.completedMappers[n] > 0 && c.mapperTimeout[n] > 0 {
 			c.mapperTimeout[n]++
 		}
 	}
@@ -199,10 +240,30 @@ func (c *Coordinator) updateMapper() {
 // Keep track of timeouts
 func (c *Coordinator) updateReducer() {
 	for n := range c.reducerTimeout {
-		if !c.reducer.completedReducers[n] && c.reducerTimeout[n] > 0 {
+		if c.reducer.completedReducers[n] > 0 && c.reducerTimeout[n] > 0 {
 			c.reducerTimeout[n]++
 		}
 	}
+}
+
+func (c *Coordinator) getMapFileContent(mapFileId int) []byte {
+	file, err := os.Open(c.mapper.files[mapFileId])
+	if err != nil {
+		log.Fatalf("Cannot open file: %v\n", err)
+	}
+
+	if content, rerr := io.ReadAll(file); rerr == nil {
+		return content
+	}
+	return nil
+}
+
+func (c *Coordinator) getReduceFileLocations() []string {
+	var workerAddresses []string //Fetch all addresses of the workers since all buckets will be spread out
+	for id := range c.mapper.mapWorkerIds {
+		workerAddresses = append(workerAddresses, c.Workers[id])
+	}
+	return workerAddresses
 }
 
 func (c *Coordinator) checkStatus() {
@@ -214,10 +275,10 @@ func (c *Coordinator) checkStatus() {
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	l, e := net.Listen("tcp", ":1234")
+	// sockname := coordinatorSock()
+	// os.Remove(sockname)
+	// l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
@@ -237,25 +298,44 @@ func (c *Coordinator) Done() bool {
 	return retValue
 }
 
+// Get preferred outbound ip of this machine
+func GetOutboundIP() net.IP {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP
+}
+
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	numFiles := len(files)
 
-	//log.Printf("Coordinator setup: files %v, nReduce %d, numFiles: %d\n", files, nReduce, numFiles)
+	ip := GetOutboundIP()
+
 	c := Coordinator{
+		ip,
 		sync.Mutex{},
 		false,
 		nReduce,
 		make([]int, numFiles),
 		make([]int, nReduce),
-		MapTracker{files, numFiles, 0, make([]bool, numFiles)},
-		ReduceTracker{0, make([]bool, nReduce)},
+		make(map[int]string),
+		1, //Start worker ids at 1
+		MapTracker{files, numFiles, 0, make([]int, numFiles), make(map[int]bool)},
+		ReduceTracker{0, make([]int, nReduce), make(map[int]bool)},
 	}
 
 	// Your code here.
 	c.server()
 	go c.serverHandler() // start server handling
+
+	fmt.Printf("Coordinator started on %v\nnReduce = %d\n", ip, nReduce)
 	return &c
 }

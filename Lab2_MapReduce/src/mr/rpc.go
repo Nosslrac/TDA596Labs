@@ -7,6 +7,7 @@ package mr
 //
 
 import (
+	"net"
 	"os"
 	"strconv"
 )
@@ -19,26 +20,57 @@ const (
 	MAP    Method = 1 //Do map
 	REDUCE Method = 2 //Do reduce
 	WAIT   Method = 3 //Standby, might be more work later
-	NOWORK Method = 4 //Quit no more work
+	NOWORK Method = 5 //Quit no more work
+)
+
+type FileType int
+
+const (
+	MAPFILES     FileType = 1
+	REDUCEFILES  FileType = 2
+	FILENOTFOUND FileType = 3
 )
 
 type WorkRequest struct {
-	Ready bool
+	WorkerId int
+}
+
+type SetupRequest struct {
+	IPAddress net.IP
 }
 
 type WorkComplete struct {
 	WorkType   Method
-	WorkId     int
+	JobId      int
 	OutputFile string
+	WorkerId   int
+}
+
+type WorkSetup struct {
+	WorkerId int
+	NumFiles int
+	NReduce  int
 }
 
 type WorkReply struct {
 	WorkType Method // MAP, REDUCE, WAIT, NOWORK
-	WorkId   int
+	JobId    int
 	NumFiles int
 	NReduce  int
 
-	MapFile string
+	MapFileName    string
+	MapFileContent []byte
+
+	ReduceFileLocations []string
+}
+
+type MappedFiles struct {
+	FileData []byte
+}
+
+type FileRequest struct {
+	FileType FileType
+	FileID   int
 }
 
 type ExampleArgs struct {
@@ -57,6 +89,12 @@ type ExampleReply struct {
 // Athena AFS doesn't support UNIX-domain sockets.
 func coordinatorSock() string {
 	s := "/var/tmp/5840-mr-"
+	s += strconv.Itoa(os.Getuid())
+	return s
+}
+
+func workerSock() string {
+	s := "/var/tmp/1234-mr-"
 	s += strconv.Itoa(os.Getuid())
 	return s
 }

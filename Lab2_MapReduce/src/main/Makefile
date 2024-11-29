@@ -1,17 +1,23 @@
+RACE=-race
 
 runc: build
 	./mrcoordinator ./pg*txt
 
-runw:
-	./mrworker wc.so
+runw1:
+	./mrworker ../mrapps/wc.so 127.0.0.1:1234 5555
+	
+runw2:
+	./mrworker ../mrapps/wc.so 127.0.0.1:1234 4444
 
 build: clean
-	go build -race -buildmode=plugin ../mrapps/wc.go
-	cp ../mrapps/wc.so ./
-	go build -race mrcoordinator.go
-	go build -race mrworker.go
+	cd ../mrapps && go build $(RACE) -buildmode=plugin wc.go
+	go build $(RACE) mrcoordinator.go
+	go build $(RACE) mrworker.go
+	go build $(RACE) mrsequential.go
 	
+
 clean:
-	go clean
 	rm -f mr-*-*
 	rm -f mr-out*
+	cd ../mrapps && go clean
+	cd .. && go clean

@@ -18,7 +18,7 @@ import (
 
 type WorkerProcess struct {
 	IsSetup              bool
-	IpAddress            net.IP
+	IpAddress            string
 	WorkerId             int
 	CompletedMapTasks    []bool
 	CompletedReduceTasks []bool
@@ -51,7 +51,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string, serverAddress string, port string) {
 	worker := WorkerProcess{
 		false,
-		GetOutboundIP(),
+		"127.0.0.1:" + port, //GetOutboundIP(),
 		-1,
 		[]bool{},
 		[]bool{},
@@ -67,11 +67,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	worker.IsSetup = true
 	worker.CompletedMapTasks = make([]bool, reply.NumFiles)
 	worker.CompletedReduceTasks = make([]bool, reply.NReduce)
-
+	fmt.Printf("Worker address: %s, Id: %d\n", worker.IpAddress, worker.WorkerId)
 	go worker.worker() // Handle rpc requests
 	// Get more work as long as there is work
 	for {
-		time.Sleep(time.Millisecond * 500)
+		//time.Sleep(time.Millisecond * 500)
 		reply := worker.CallGetWork()
 		if reply.WorkType == NOWORK {
 			fmt.Println("No work left: exiting")
@@ -79,13 +79,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		if reply.WorkType == WAIT {
 			time.Sleep(time.Second * 1) // Wait a bit then request work again
+			fmt.Println("Do some waiting")
 			continue
 		}
 		if reply.WorkType == MAP {
-			//fmt.Println("Do some MAPPING", reply.JobId)
+			fmt.Println("Do some MAPPING", reply.JobId)
 			worker.DoMap(&reply, mapf)
 		} else {
-			//fmt.Println("Do some REDUCING")
+			fmt.Println("Do some REDUCING", reply.JobId)
 			worker.DoReduce(&reply, reducef)
 		}
 	}
@@ -98,12 +99,15 @@ func (worker *WorkerProcess) DoReduce(reply *WorkReply, reducef func(string, []s
 
 	// Get files from other people
 	fileReq := FileRequest{REDUCEFILES, reply.JobId}
-	for _, workerAddress := range reply.ReduceFileLocations {
+	for _, workerLocation := range reply.ReduceFileLocations {
 		var fileReader io.Reader
-		if workerAddress == worker.IpAddress.String() {
+		if workerLocation.WorkerId == worker.WorkerId { // We have the file
 			fileReader = bytes.NewReader(worker.retreiveBucketFiles(reply.JobId))
 		} else {
-			mappedFiles := worker.CallGetFiles(&fileReq, workerAddress)
+			mappedFiles := worker.CallGetFiles(&fileReq, &workerLocation, reply.JobId)
+			if mappedFiles.WorkerStat == WORKERDEAD {
+				return
+			}
 			fileReader = bytes.NewReader(mappedFiles.FileData)
 		}
 
@@ -188,23 +192,36 @@ func (worker *WorkerProcess) CallGetWork() WorkReply {
 }
 
 func (worker *WorkerProcess) CallDone(workType Method, outFile string, JobId int) {
-	workComplete := WorkComplete{workType, JobId, outFile, worker.WorkerId}
+	var outContent []byte = nil
+	if workType == REDUCE {
+		file, _ := os.Open(outFile)
+		outContent, _ = io.ReadAll(file)
+	}
+	workComplete := WorkComplete{workType, JobId, outContent, worker.WorkerId}
 	worker.updateWorkingCompletedFiles(workType, JobId)
 	if ok := call("Coordinator.WorkDone", &workComplete, nil, worker.CoordAddress); !ok {
 		fmt.Printf("Call failed: Coordinator not responding\n")
 	}
 }
 
-func (worker *WorkerProcess) CallGetFiles(request *FileRequest, address string) MappedFiles {
+func (worker *WorkerProcess) CallGetFiles(request *FileRequest, workerLocation *WorkerLocation, jobId int) MappedFiles {
 	mappedFiles := MappedFiles{}
-	if ok := call("WorkerProcess.GetMappedBuckets", request, &mappedFiles, address); !ok {
-		fmt.Printf("Call failed: WorkerProcess not responding\n")
+	if ok := call("WorkerProcess.GetMappedBuckets", request, &mappedFiles, workerLocation.Address); !ok {
+		fmt.Printf("Call failed: WorkerProcess not responding. Calling coordinator to tell\n")
+		reply := WorkReply{}
+		failedJob := JobFailed{*workerLocation, REDUCE, jobId}
+		if ok := call("Coordinator.WorkerDead", &failedJob, &reply, worker.CoordAddress); !ok {
+			fmt.Printf("Coordinator not responding: exiting")
+			os.Exit(0)
+		}
+		mappedFiles.WorkerStat = WORKERDEAD
 	}
 	return mappedFiles
 }
 
 func (worker *WorkerProcess) getFiles(request *FileRequest, mappedFiles *MappedFiles) {
 	if request.FileType == MAPFILES {
+		mappedFiles.WorkerStat = WORKERALIVE
 		mappedFiles.FileData = worker.retreiveBucketFiles(request.FileID)
 	}
 }
@@ -239,6 +256,7 @@ func (worker *WorkerProcess) updateWorkingCompletedFiles(workType Method, JobId 
 }
 
 func (worker *WorkerProcess) GetMappedBuckets(request *FileRequest, mappedFiles *MappedFiles) error {
+	fmt.Println("Sending mapped buckets")
 	worker.getFiles(request, mappedFiles)
 	return nil
 }
@@ -247,7 +265,7 @@ func (worker *WorkerProcess) GetMappedBuckets(request *FileRequest, mappedFiles 
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}, address string) bool {
-	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	c, err := rpc.DialHTTP("tcp", address)
 	// sockname := coordinatorSock()
 	// c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {

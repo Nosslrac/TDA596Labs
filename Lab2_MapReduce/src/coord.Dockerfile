@@ -15,10 +15,7 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN go build -race -buildmode=plugin ./mrapps/wc.go && \
-    go build -race ./main/mrcoordinator.go && \
-    go build -race ./main/mrworker.go
-    #go build -race ./main/mrsequential.go 
+RUN go build -race ./main/mrcoordinator.go
 
 # Run
 CMD ["./mrcoordinator ./main/pg*txt"]

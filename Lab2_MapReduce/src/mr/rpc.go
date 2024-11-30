@@ -7,13 +7,20 @@ package mr
 //
 
 import (
-	"net"
 	"os"
 	"strconv"
 )
 
 // example to show how to declare the arguments
-// and reply for an RPC.
+// and reply for an RPC
+
+type WorkerStatus bool
+
+const (
+	WORKERALIVE WorkerStatus = false
+	WORKERDEAD  WorkerStatus = true
+)
+
 type Method int
 
 const (
@@ -36,13 +43,13 @@ type WorkRequest struct {
 }
 
 type SetupRequest struct {
-	IPAddress net.IP
+	IPAddress string
 }
 
 type WorkComplete struct {
 	WorkType   Method
 	JobId      int
-	OutputFile string
+	OutputFile []byte
 	WorkerId   int
 }
 
@@ -61,11 +68,23 @@ type WorkReply struct {
 	MapFileName    string
 	MapFileContent []byte
 
-	ReduceFileLocations []string
+	ReduceFileLocations []WorkerLocation
+}
+
+type WorkerLocation struct {
+	WorkerId int
+	Address  string
+}
+
+type JobFailed struct {
+	UnreachableWorker WorkerLocation
+	WorkType          Method
+	JobId             int
 }
 
 type MappedFiles struct {
-	FileData []byte
+	WorkerStat WorkerStatus
+	FileData   []byte
 }
 
 type FileRequest struct {

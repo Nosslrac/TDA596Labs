@@ -21,3 +21,9 @@ clean:
 	rm -f mr-out*
 	cd ../mrapps && go clean
 	cd .. && go clean
+
+dockerc:
+	docker run -v ./output:/app/ -p 1234:1234 coord:latest ./mrcoordinator 
+
+dockerit:
+	docker run -it -p 1234:1234 coord:latest sh

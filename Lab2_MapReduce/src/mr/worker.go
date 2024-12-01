@@ -67,7 +67,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	worker.IsSetup = true
 	worker.CompletedMapTasks = make([]bool, reply.NumFiles)
 	worker.CompletedReduceTasks = make([]bool, reply.NReduce)
-	fmt.Printf("Worker address: %s, Id: %d\n", worker.IpAddress, worker.WorkerId)
+	// fmt.Printf("Worker address: %s, Id: %d\n", worker.IpAddress, worker.WorkerId)
 	go worker.worker() // Handle rpc requests
 	// Get more work as long as there is work
 	for {

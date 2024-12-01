@@ -166,7 +166,7 @@ func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
 		c.mapper.completedMappers[complete.JobId].Completed = true
 	} else if complete.WorkType == REDUCE {
 		fileName := fmt.Sprintf("mr-out-%d", complete.JobId)
-		if file, err := os.Create(fileName); err == nil {
+		if file, err := os.Create("output/" + fileName); err == nil {
 			fmt.Fprintf(file, "%s", complete.OutputFile)
 			file.Close()
 		}

@@ -82,7 +82,7 @@ type JobFailed struct {
 	JobId             int
 }
 
-type MappedFiles struct {
+type Files struct {
 	WorkerStat WorkerStatus
 	FileData   []byte
 }

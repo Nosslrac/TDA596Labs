@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  coordinator:
+    image: coord:latest
+    command: ./mrcoordinator pg-being_ernest.txt pg-dorian_gray.txt pg-frankenstein.txt pg-grimm.txt pg-huckleberry_finn.txt pg-metamorphosis.txt pg-sherlock_holmes.txt pg-tom_sawyer.txt
+    volumes:
+      - ./output:/app/output:rw
+    ports: 
+      - "1234:1234"
+    networks:
+      - app_network
+
+  worker1:
+    image: worker:latest
+    command: ./mrworker wc.so coordinator:1234 worker1:5555
+    ports:
+      - "1111:5555"
+    networks:
+      - app_network
+  worker2:
+    image: worker:latest
+    command: ./mrworker wc.so coordinator:1234 worker2:5555
+    ports:
+      - "2222:5555"
+    networks:
+      - app_network
+
+volumes:
+  output:
+
+
+networks:
+  app_network:
+    driver: bridge

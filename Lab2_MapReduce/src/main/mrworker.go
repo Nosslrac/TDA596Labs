@@ -21,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) != 4 {
-		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so <coordip:port> <port>\n")
+		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so <coordip:port> <workerip:port>\n")
 		os.Exit(1)
 	}
 

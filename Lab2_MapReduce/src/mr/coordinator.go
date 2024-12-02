@@ -133,6 +133,7 @@ func (c *Coordinator) GetWork(request *WorkRequest, reply *WorkReply) error {
 func (c *Coordinator) WorkerDead(faildJob *JobFailed, _ *WorkReply) error {
 	c.CoordMutex.Lock()
 	c.clearAllWork(faildJob.UnreachableWorker.WorkerId)
+	fmt.Printf("Worker %d on address %s failed to respond, clearing his work\n", faildJob.UnreachableWorker.WorkerId, faildJob.UnreachableWorker.Address)
 	c.reducer.completedReducers[faildJob.JobId].WorkerId = 0 // Failing job will have to be restarted
 	c.reducerTimeout[faildJob.JobId] = 0
 	c.CoordMutex.Unlock()
@@ -141,10 +142,8 @@ func (c *Coordinator) WorkerDead(faildJob *JobFailed, _ *WorkReply) error {
 
 func (c *Coordinator) clearAllWork(workerId int) {
 	fmt.Printf("Clearing work for %d\n", workerId)
-	c.clearReduceDeadWorker(workerId)
 	c.clearMapDeadWorker(workerId)
 	delete(c.mapper.mapWorkerIds, workerId)     // Remove active workers
-	delete(c.reducer.reduceWorkerIds, workerId) // Clear the job that has been done by failed worker
 	delete(c.Workers, workerId)                 // Remove from worker list
 }
 
@@ -152,6 +151,7 @@ func (c *Coordinator) DoSetup(request *SetupRequest, reply *WorkSetup) error {
 	c.CoordMutex.Lock()
 	reply.WorkerId = c.NextWorkerId
 	c.Workers[c.NextWorkerId] = request.IPAddress
+	fmt.Printf("Worker %d joined: IP: %s\n", c.NextWorkerId, request.IPAddress)
 	c.NextWorkerId++
 	reply.NReduce = c.Nreduce
 	reply.NumFiles = c.mapper.numFiles
@@ -166,9 +166,11 @@ func (c *Coordinator) WorkDone(complete *WorkComplete, reply *WorkReply) error {
 		c.mapper.completedMappers[complete.JobId].Completed = true
 	} else if complete.WorkType == REDUCE {
 		fileName := fmt.Sprintf("mr-out-%d", complete.JobId)
-		if file, err := os.Create("output/" + fileName); err == nil {
+		if file, err := os.Create("./output/" + fileName); err == nil {
 			fmt.Fprintf(file, "%s", complete.OutputFile)
 			file.Close()
+		} else {
+			fmt.Printf("Fail to create file: %v", err)
 		}
 		c.reducer.completedReducers[complete.JobId].Completed = true
 	}
@@ -245,16 +247,6 @@ func (c *Coordinator) clearMapDeadWorker(workerId int) {
 	}
 }
 
-func (c *Coordinator) clearReduceDeadWorker(workerId int) {
-	for i := range c.reducer.completedReducers {
-		if c.reducer.completedReducers[i].WorkerId == workerId {
-			c.reducer.completedReducers[i].WorkerId = 0 // Reset for new work
-			c.reducer.completedReducers[i].Completed = false
-			c.reducerTimeout[i] = 0 // Reset timeout counter
-		}
-	}
-}
-
 // Keep track of timeouts
 func (c *Coordinator) updateMapper() {
 	for n := range c.mapperTimeout {
@@ -313,6 +305,7 @@ func (c *Coordinator) server() {
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
+	fmt.Println(l.Addr())
 	go http.Serve(l, nil)
 }
 
@@ -360,6 +353,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		MapTracker{files, numFiles, 0, make([]WorkChunk, numFiles), make(map[int]bool)},
 		ReduceTracker{0, make([]WorkChunk, nReduce), make(map[int]bool)},
 	}
+	os.RemoveAll("./output/")
+	os.Mkdir("./output", 0700) // It fails in docker, since we will mount that directory but then its there anyway
 
 	// Your code here.
 	c.server()

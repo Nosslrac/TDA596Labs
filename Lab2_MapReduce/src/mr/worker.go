@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ type WorkerProcess struct {
 	CompletedMapTasks    []bool
 	CompletedReduceTasks []bool
 	CoordAddress         string
-	Port                 string
+	port	string
 }
 
 // Map functions return a slice of KeyValue.
@@ -48,10 +49,11 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string, serverAddress string, port string) {
+	reducef func(string, []string) string, serverAddress string, workerAddress string) {
+	port := strings.Split(workerAddress, ":")[1]
 	worker := WorkerProcess{
 		false,
-		"127.0.0.1:" + port, //GetOutboundIP(),
+		workerAddress, //,
 		-1,
 		[]bool{},
 		[]bool{},
@@ -67,7 +69,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	worker.IsSetup = true
 	worker.CompletedMapTasks = make([]bool, reply.NumFiles)
 	worker.CompletedReduceTasks = make([]bool, reply.NReduce)
-	// fmt.Printf("Worker address: %s, Id: %d\n", worker.IpAddress, worker.WorkerId)
 	go worker.worker() // Handle rpc requests
 	// Get more work as long as there is work
 	for {
@@ -98,17 +99,27 @@ func (worker *WorkerProcess) DoReduce(reply *WorkReply, reducef func(string, []s
 	bufferedFile := []KeyValue{}
 
 	// Get files from other people
-	fileReq := FileRequest{REDUCEFILES, reply.JobId}
+	fileReq := FileRequest{MAPFILES, reply.JobId}
 	for _, workerLocation := range reply.ReduceFileLocations {
 		var fileReader io.Reader
 		if workerLocation.WorkerId == worker.WorkerId { // We have the file
-			fileReader = bytes.NewReader(worker.retreiveBucketFiles(reply.JobId))
-		} else {
-			mappedFiles := worker.CallGetFiles(&fileReq, &workerLocation, reply.JobId)
-			if mappedFiles.WorkerStat == WORKERDEAD {
+			fileReader = bytes.NewReader(worker.retreiveFiles(fmt.Sprintf("mr-*-%d", reply.JobId)))
+		} else if workerLocation.Address != worker.IpAddress {
+			fmt.Printf("Requesting work from worker: %d, Address: %v\n", worker.WorkerId, workerLocation.Address)
+			files := worker.CallGetFiles(&fileReq, &workerLocation, reply.JobId)
+			if files.WorkerStat == WORKERDEAD {
 				return
 			}
-			fileReader = bytes.NewReader(mappedFiles.FileData)
+			fmt.Printf("Work received: %d\n", len(files.FileData))
+			fileReader = bytes.NewReader(files.FileData)
+		} else {
+			fmt.Println("Failing job")
+			failedJob := JobFailed{workerLocation, REDUCE, reply.JobId}
+			if ok := call("Coordinator.WorkerDead", &failedJob, &reply, worker.CoordAddress); !ok {
+				fmt.Printf("Coordinator not responding: exiting")
+				os.Exit(0)
+			}
+			return
 		}
 
 		var tmpBuffer []KeyValue
@@ -204,9 +215,9 @@ func (worker *WorkerProcess) CallDone(workType Method, outFile string, JobId int
 	}
 }
 
-func (worker *WorkerProcess) CallGetFiles(request *FileRequest, workerLocation *WorkerLocation, jobId int) MappedFiles {
-	mappedFiles := MappedFiles{}
-	if ok := call("WorkerProcess.GetMappedBuckets", request, &mappedFiles, workerLocation.Address); !ok {
+func (worker *WorkerProcess) CallGetFiles(request *FileRequest, workerLocation *WorkerLocation, jobId int) Files {
+	files := Files{}
+	if ok := call("WorkerProcess.GetMappedBuckets", request, &files, workerLocation.Address); !ok {
 		fmt.Printf("Call failed: WorkerProcess not responding. Calling coordinator to tell\n")
 		reply := WorkReply{}
 		failedJob := JobFailed{*workerLocation, REDUCE, jobId}
@@ -214,20 +225,22 @@ func (worker *WorkerProcess) CallGetFiles(request *FileRequest, workerLocation *
 			fmt.Printf("Coordinator not responding: exiting")
 			os.Exit(0)
 		}
-		mappedFiles.WorkerStat = WORKERDEAD
+		files.WorkerStat = WORKERDEAD
 	}
-	return mappedFiles
+	return files
 }
 
-func (worker *WorkerProcess) getFiles(request *FileRequest, mappedFiles *MappedFiles) {
+func (worker *WorkerProcess) getFiles(request *FileRequest, files *Files) {
 	if request.FileType == MAPFILES {
-		mappedFiles.WorkerStat = WORKERALIVE
-		mappedFiles.FileData = worker.retreiveBucketFiles(request.FileID)
+		files.WorkerStat = WORKERALIVE
+		files.FileData = worker.retreiveFiles(fmt.Sprintf("mr-*-%d", request.FileID))
+	} else {
+		files.WorkerStat = WORKERALIVE
+		files.FileData = worker.retreiveFiles("mr-out-*")
 	}
 }
 
-func (worker *WorkerProcess) retreiveBucketFiles(bucketId int) []byte {
-	fileNamePattern := fmt.Sprintf("mr-*-%d", bucketId) // Get all files with bucket FileID
+func (worker *WorkerProcess) retreiveFiles(fileNamePattern string) []byte {
 
 	matches, filepathError := filepath.Glob(fileNamePattern)
 	if filepathError != nil {
@@ -255,9 +268,9 @@ func (worker *WorkerProcess) updateWorkingCompletedFiles(workType Method, JobId 
 	}
 }
 
-func (worker *WorkerProcess) GetMappedBuckets(request *FileRequest, mappedFiles *MappedFiles) error {
+func (worker *WorkerProcess) GetMappedBuckets(request *FileRequest, Files *Files) error {
 	fmt.Println("Sending mapped buckets")
-	worker.getFiles(request, mappedFiles)
+	worker.getFiles(request, Files)
 	return nil
 }
 
@@ -287,7 +300,7 @@ func call(rpcname string, args interface{}, reply interface{}, address string) b
 func (worker *WorkerProcess) worker() {
 	rpc.Register(worker)
 	rpc.HandleHTTP()
-	l, e := net.Listen("tcp", ":"+worker.Port)
+	l, e := net.Listen("tcp", ":"+worker.port)
 	// sockname := workerSock()
 	// os.Remove(sockname)
 	// l, e := net.Listen("unix", sockname)

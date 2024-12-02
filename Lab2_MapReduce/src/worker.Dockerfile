@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.15
+FROM golang:1.23 AS builder
 
 # Set destination for COPY
 WORKDIR /app
@@ -12,18 +12,24 @@ RUN go mod download
 
 # Copy the source code. Note the slash at the end, as explained in
 # https://docs.docker.com/reference/dockerfile/#copy
-COPY ./mrapps/* ./mr/* ./main/* ./
+COPY . .
 
 # Build
-RUN go build -race -buildmode=plugin wc.go && \
-	go build -race -buildmode=plugin indexer.go  &&\
-	go build -race -buildmode=plugin mtiming.go &&\
-	go build -race -buildmode=plugin rtiming.go &&\
-	go build -race -buildmode=plugin jobcount.go &&\
-	go build -race -buildmode=plugin early_exit.go &&\
-	go build -race -buildmode=plugin crash.go &&\
-	go build -race -buildmode=plugin nocrash.go &&\
+RUN go build -race -buildmode=plugin ./mrapps/wc.go && \
+	go build -race -buildmode=plugin ./mrapps/indexer.go  &&\
+	go build -race -buildmode=plugin ./mrapps/mtiming.go &&\
+	go build -race -buildmode=plugin ./mrapps/rtiming.go &&\
+	go build -race -buildmode=plugin ./mrapps/jobcount.go &&\
+	go build -race -buildmode=plugin ./mrapps/early_exit.go &&\
+	go build -race -buildmode=plugin ./mrapps/crash.go &&\
+	go build -race -buildmode=plugin ./mrapps/nocrash.go &&\
 	go build -race ./main/mrworker.go
+
+
+FROM alpine:latest
+WORKDIR /root/
+RUN apk add --no-cache libc6-compat ca-certificates tzdata
+COPY --from=builder /app/mrworker /app/*.so ./
 
 # Run
 # ./mrworker ./mrapps/XXX.so <serverip>:<serverport> <workerport>

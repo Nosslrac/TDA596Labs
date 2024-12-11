@@ -26,17 +26,25 @@ type Chord struct {
 	chordSync sync.Mutex
 }
 
+type RetCode int
+
+const SOLONODE RetCode = 0
+const MYSUCC RetCode = 1
+const PASSALONG RetCode = 2
+
 type FingerEntry struct {
 	Identifier  big.Int
-	NodeAddress string
+	NodeAddress NodeAddress
 }
+
+type NodeAddress string
 
 type NodeInfo struct {
 	Identifier  big.Int
-	NodeAddress string
-	Predecessor string
+	NodeAddress NodeAddress
+	Predecessor NodeAddress
 	FingerTable []FingerEntry
-	Successors  string
+	Successors  []NodeAddress
 	// Add more
 }
 

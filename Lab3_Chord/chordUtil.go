@@ -9,18 +9,18 @@ import (
 
 // Usful utility functions for chord
 
-func hashString(elt string) *big.Int {
+func hashString(elt NodeAddress) *big.Int {
 	hasher := sha1.New()
 	hasher.Write([]byte(elt))
 	return new(big.Int).SetBytes(hasher.Sum(nil))
 }
 
-const keySize = sha1.Size * 8
+const keySize = 8
 
 var two = big.NewInt(2)
-var hashMod = new(big.Int).Exp(big.NewInt(2), big.NewInt(keySize), nil)
+var hashMod = new(big.Int).Exp(two, big.NewInt(keySize), nil)
 
-func jump(address string, fingerentry int) *big.Int {
+func jump(address NodeAddress, fingerentry int) *big.Int {
 	n := hashString(address)
 	fingerentryminus1 := big.NewInt(int64(fingerentry) - 1)
 	jump := new(big.Int).Exp(two, fingerentryminus1, nil)
@@ -29,7 +29,23 @@ func jump(address string, fingerentry int) *big.Int {
 	return new(big.Int).Mod(sum, hashMod)
 }
 
-func getIdentifier(address string, specified string) *big.Int {
+func jumpIdentifier(identifier *big.Int, fingerentry int) *big.Int {
+	fingerentryminus1 := big.NewInt(int64(fingerentry) - 1)
+	jump := new(big.Int).Exp(two, fingerentryminus1, nil)
+	sum := new(big.Int).Add(identifier, jump)
+
+	return new(big.Int).Mod(sum, hashMod)
+}
+
+func between(start, elt, end *big.Int, inclusive bool) bool {
+	if end.Cmp(start) > 0 {
+		return (start.Cmp(elt) < 0 && elt.Cmp(end) < 0) || (inclusive && elt.Cmp(end) == 0)
+	} else {
+		return start.Cmp(elt) < 0 || elt.Cmp(end) < 0 || (inclusive && elt.Cmp(end) == 0)
+	}
+}
+
+func getIdentifier(address NodeAddress, specified string) *big.Int {
 	if specified == "XXX" {
 		//Not specified -> generate based on address
 		return hashString(address)
@@ -40,7 +56,7 @@ func getIdentifier(address string, specified string) *big.Int {
 		if !ok {
 			log.Fatalf("Specified identifier parse error: %s\n", specified)
 		}
-		return n
+		return n.Mod(n, hashMod)
 	}
 }
 
@@ -52,5 +68,6 @@ func verifyRange(stabilize, fixFingers, checkPred int) bool {
 }
 
 func printHash(hash *big.Int) {
-	fmt.Printf("Hash: %040x\n", hash)
+	x := new(big.Int).Mod(hash, hashMod)
+	fmt.Printf("Hash: %040x\n", x)
 }

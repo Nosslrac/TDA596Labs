@@ -2,17 +2,48 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"math/big"
+	"net"
+	"net/http"
 	"net/rpc"
+	"strings"
 )
 
 type JoinRequest struct {
-	IpAddressAndPort string
-	Identifier       string
+	NodeAddress NodeAddress
+	Identifier  big.Int
 }
 
-type JoinResponse struct {
-	SuccessorNode           string
-	SuccessorNodeIdentifier string
+type Response struct {
+	IsSuccessor bool
+	NodeAddress NodeAddress
+	Identifier  big.Int
+}
+
+type StabilizeRequest struct {
+	NodeAddress NodeAddress
+	Identifier  big.Int
+}
+
+type StabilizeResponse struct {
+	YouGood        bool
+	NewPredAddress NodeAddress
+}
+
+type FindRequest struct {
+	NodeAddress   NodeAddress
+	Identifier    big.Int
+	LookupAddress NodeAddress
+}
+
+type NotifyRequest struct {
+	NodeAddress NodeAddress
+	Identifier  big.Int
+}
+
+type NotifyResponse struct {
+	Success bool
 }
 
 func call(rpcname string, args interface{}, reply interface{}, address string) bool {
@@ -30,4 +61,20 @@ func call(rpcname string, args interface{}, reply interface{}, address string) b
 
 	fmt.Println(err)
 	return false
+}
+
+// start a thread that listens for RPCs from worker.go
+func (chord *Chord) rpcListener() {
+	rpc.Register(chord)
+	rpc.HandleHTTP()
+
+	chord.tracer.Trace("Rpc handler listening on port %s", strings.Split(string(chord.node.NodeAddress), ":")[1])
+	l, e := net.Listen(chord.protocol, ":"+strings.Split(string(chord.node.NodeAddress), ":")[1])
+	// sockname := coordinatorSock()
+	// os.Remove(sockname)
+	// l, e := net.Listen("unix", sockname)
+	if e != nil {
+		log.Fatal("listen error:", e)
+	}
+	go http.Serve(l, nil)
 }

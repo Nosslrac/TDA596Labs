@@ -12,10 +12,10 @@ import (
 func hashString(elt NodeAddress) *big.Int {
 	hasher := sha1.New()
 	hasher.Write([]byte(elt))
-	return new(big.Int).SetBytes(hasher.Sum(nil))
+	return mod(new(big.Int).SetBytes(hasher.Sum(nil)))
 }
 
-const keySize = 8
+const keySize = 4
 
 var two = big.NewInt(2)
 var hashMod = new(big.Int).Exp(two, big.NewInt(keySize), nil)
@@ -35,6 +35,10 @@ func jumpIdentifier(identifier *big.Int, fingerentry int) *big.Int {
 	sum := new(big.Int).Add(identifier, jump)
 
 	return new(big.Int).Mod(sum, hashMod)
+}
+
+func mod(input *big.Int) *big.Int {
+	return new(big.Int).Mod(input, hashMod)
 }
 
 func between(start, elt, end *big.Int, inclusive bool) bool {
@@ -69,5 +73,5 @@ func verifyRange(stabilize, fixFingers, checkPred int) bool {
 
 func printHash(hash *big.Int) {
 	x := new(big.Int).Mod(hash, hashMod)
-	fmt.Printf("Hash: %040x\n", x)
+	fmt.Printf("Hash: %01x\n", x)
 }

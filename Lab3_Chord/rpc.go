@@ -32,9 +32,8 @@ type StabilizeResponse struct {
 }
 
 type FindRequest struct {
-	NodeAddress   NodeAddress
-	Identifier    big.Int
-	LookupAddress NodeAddress
+	QueryIdentifier  big.Int
+	QueryNodeAddress NodeAddress
 }
 
 type NotifyRequest struct {
@@ -43,7 +42,8 @@ type NotifyRequest struct {
 }
 
 type NotifyResponse struct {
-	Success bool
+	Success        bool
+	NewPredAddress NodeAddress
 }
 
 func call(rpcname string, args interface{}, reply interface{}, address string) bool {

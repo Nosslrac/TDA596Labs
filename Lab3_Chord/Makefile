@@ -1,13 +1,17 @@
 
+files=$(echo *.go)
 
 build: chordTypes.go chord.go rpc.go
-	go build .
+	go build -race -o chord
 
 run: build
-	./chord -a localhost -p 1234 --ts 2000 --tff 3000 --tcp 5000 -r 1 -v
+	./chord -a localhost -p 1111 --ts 2000 --tff 5000 --tcp 5000 -r 1 -v
 
 runs: build
-	./chord -a localhost -p 2341 --ts 2000 --tff 3000 --tcp 5000 -r 1 -v -jp 1234 -ja localhost
+	./chord -a localhost -p 3333 --ts 2000 --tff 5000 --tcp 5000 -r 1 -v -jp 1111 -ja localhost
 
 runt: build
-	./chord -a localhost -p 3452 --ts 2000 --tff 3000 --tcp 5000 -r 1 -v -jp 1234 -ja localhost
+	./chord -a localhost -p 5555 --ts 2000 --tff 5000 --tcp 5000 -r 1 -v -jp 1111 -ja localhost
+
+runb: build
+	./chord -a localhost -p 4444 --ts 2000 --tff 5000 --tcp 5000 -r 1 -v -jp 1111 -ja localhost

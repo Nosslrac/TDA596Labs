@@ -29,7 +29,7 @@ type Chord struct {
 type RetCode int
 
 const SOLONODE RetCode = 0
-const MYSUCC RetCode = 1
+const ISSUCC RetCode = 1
 const PASSALONG RetCode = 2
 
 type FingerEntry struct {

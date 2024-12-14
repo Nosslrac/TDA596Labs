@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +17,12 @@ func (tracer ChordTracer) Trace(format string, a ...any) {
 	if tracer.verbose {
 		fmt.Printf(format+"\n", a...)
 	}
+}
+
+func (chord *Chord) dump() {
+	fmt.Printf("### Node info ###\nNode identifier: %01x\nNode address: %s\nNode successors: %v\nNode predecessor: %v\n\n",
+		&chord.node.Identifier, chord.node.NodeAddress, chord.node.Successors, chord.node.Predecessor)
+	chord.printFingers()
 }
 
 func (chord *Chord) printFingers() {
@@ -28,14 +36,47 @@ func (chord *Chord) printFingers() {
 func (chord *Chord) parseInput(input string) {
 	chord.chordSync.Lock()
 	defer chord.chordSync.Unlock()
-	if input == "hash\n" {
+
+	args := strings.Split(input, " ")
+
+	command := args[0]
+
+	switch command {
+	case "hash\n":
 		printHash(&chord.node.Identifier)
-	} else if input == "dump\n" {
-		fmt.Printf("### Node info ###\nNode identifier: %01x\nNode address: %s\nNode successors: %v\nNode predecessor: %v\n\n",
-			&chord.node.Identifier, chord.node.NodeAddress, chord.node.Successors, chord.node.Predecessor)
-		chord.printFingers()
+	case "dump\n":
+		chord.dump()
+	case "StoreFile":
+		if len(args) != 2 {
+			fmt.Println("Wrong usage of StoreFile: Usage: StoreFile <localFilePath>")
+			return
+		}
+		arg := args[1][:len(args[1])-1] //remove \n
+		fileContent := getFileContent(arg)
+		if fileContent == nil {
+			chord.tracer.Trace("File empty: Abort StoreFile")
+			return
+		}
+		storeFileReq := StoreFileRequest{*hashString(NodeAddress(arg)), arg, fileContent}
+		chord.CallStoreFile(&storeFileReq)
+	default:
+		fmt.Println("Command not found: try help to see a list of commands")
+	}
+}
+
+func getFileContent(filePath string) []byte {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("Couldn't open file: %v\n", err)
+		return nil
 	}
 
+	content, rerr := io.ReadAll(file)
+	if rerr != nil {
+		fmt.Printf("Couldn't read file %v\n", rerr)
+		return nil
+	}
+	return content
 }
 
 ////////////////////////////////////////////////////
@@ -54,7 +95,7 @@ func (chord *Chord) Create() {
 	chord.tracer.Trace("Node %s: I am creating chord ring!", chord.node.NodeAddress)
 
 	// Create ring: The own node is both successor and predecessor
-	chord.node.Successors[0] = chord.node.NodeAddress
+	chord.node.Successors[0] = "X"
 	chord.node.Predecessor = "X"
 }
 
@@ -64,12 +105,10 @@ func (chord *Chord) FindSuccessor(findReq *FindRequest, findResp *Response) erro
 	defer chord.chordSync.Unlock()
 
 	retCode := chord.find(&findReq.QueryIdentifier, findResp)
-	if retCode == ISSUCC {
-		findResp.IsSuccessor = true
-	} else if retCode == PASSALONG {
+	if retCode == PASSALONG {
 		findResp.IsSuccessor = false
 		// If finger table is not setup properly then you'll ask your succ
-		if findResp.NodeAddress == chord.node.NodeAddress {
+		if findResp.NodeAddress == "X" {
 			chord.tracer.Trace("Pass question along to the specified node")
 			findResp.NodeAddress = chord.node.Successors[0]
 
@@ -96,14 +135,54 @@ func (chord *Chord) Stabilize(stabilizeReq *StabilizeRequest, stabilizeResp *Sta
 	return nil
 }
 
+func (chord *Chord) StoreFile(storeFileReq *StoreFileRequest, storeFileResp *StoreFileResponse) error {
+	file, err := os.Create(storeFileReq.FileName)
+
+	if err != nil {
+		fmt.Printf("Cannot create file %s: %v", storeFileReq.FileName, err)
+		storeFileResp.FileWriteSuccess = err
+		return err
+	}
+	defer file.Close()
+	_, werr := file.Write(storeFileReq.FileContent)
+
+	if werr != nil {
+		fmt.Printf("Write to file %s failed: %v", storeFileReq.FileName, werr)
+		storeFileResp.FileWriteSuccess = werr
+		return werr
+	}
+	chord.tracer.Trace("Stored file %s SUCCESS", storeFileReq.FileName)
+	storeFileResp.FileWriteSuccess = nil
+	return nil
+}
+
 func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
+	if nodeToAsk == "X" {
+		// Node has been cleared find next viable node
+		nonClearedFingerIndex := chord.getNextValidFinger(fingerIndex)
+		if nonClearedFingerIndex == -1 {
+			nodeToAsk = chord.node.Predecessor
+		} else {
+			nodeToAsk = chord.node.FingerTable[nonClearedFingerIndex].NodeAddress
+		}
+		if nodeToAsk == "X" {
+			chord.tracer.Trace("Wait to get notified, ask our predecessor")
+			return false
+		}
+	}
 	var finger *FingerEntry = &chord.node.FingerTable[fingerIndex]
-	askNode := nodeToAsk
 	findReq := FindRequest{finger.Identifier, nodeToAsk}
 	for resolveIter := 0; resolveIter < 32; resolveIter++ {
+		if findReq.QueryNodeAddress == chord.node.NodeAddress {
+			return false
+		}
+
 		resp := Response{}
 		if !chord.CallFindSuccessor(&findReq, &resp) {
-			chord.tracer.Trace("Failure to contact successor %s: Retry next round", askNode)
+			// If node doesn't respond try the next one
+			chord.tracer.Trace("Failure to contact finger %s: Retry next round", findReq.QueryNodeAddress)
+			finger.NodeAddress = "X"
+			//chord.clearDeadNode(findReq.QueryNodeAddress, false)
 			return false
 		}
 		if resp.IsSuccessor {
@@ -117,19 +196,22 @@ func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
 }
 
 func (chord *Chord) FixFingers() {
+
+	validSucc := chord.node.Successors[0] != "X"
 	succId := hashString(chord.node.Successors[0])
+
 	// chord.tracer.Trace("## Node %x ###", &chord.node.Identifier)
 	for n := 1; n <= keySize; n++ {
 		var finger *FingerEntry = &chord.node.FingerTable[n]
 		var askNode NodeAddress
 
 		// If between ourself and our succ => finger should point at our succ
-		if between(&chord.node.Identifier, &finger.Identifier, succId, true) {
+		if validSucc && between(&chord.node.Identifier, &finger.Identifier, succId, true) {
 			finger.NodeAddress = chord.node.Successors[0]
 			continue
 		}
 		// If finger containes our address ask our succ to resolve, since we don't  know
-		if finger.NodeAddress == chord.node.NodeAddress {
+		if validSucc && finger.NodeAddress == chord.node.NodeAddress {
 			// Can't use finger address ask successor to do it for us
 			askNode = chord.node.Successors[0]
 		} else {
@@ -137,13 +219,56 @@ func (chord *Chord) FixFingers() {
 			askNode = finger.NodeAddress
 		}
 
-		if !chord.resolveFinger(askNode, n) {
-			return
+		if !chord.resolveFinger(askNode, n) { // If this failes
+
 		}
 		// chord.tracer.Trace("Calling resolve with %s: resolved to %s", askNode, finger.NodeAddress)
 		// chord.tracer.Trace("Finger %x (%s) is the closest successor", hashString(finger.NodeAddress), finger.NodeAddress)
 	}
 	// chord.tracer.Trace("########################\n")
+}
+
+func (chord *Chord) getNextValidFinger(start int) int {
+	chord.tracer.Trace("Getting next valid finger %d", start)
+	for n := start; n <= keySize; n++ {
+		if chord.node.FingerTable[n].NodeAddress != "X" {
+			return n
+		}
+	}
+	return -1
+}
+
+func (chord *Chord) clearDeadNode(failedNode NodeAddress, isSucc bool) {
+	// First contact all our successors if we have many
+	if isSucc {
+		chord.node.Successors[0] = "X"
+	}
+
+	failedId := keySize
+	var succ NodeAddress = "X"
+	for n := keySize; n > 0; n-- { //Find successor after our successor
+		var finger *FingerEntry = &chord.node.FingerTable[n]
+		if failedNode == finger.NodeAddress {
+			failedId = n
+			break
+		}
+		succ = finger.NodeAddress
+	}
+	if succ != "X" && succ != chord.node.NodeAddress {
+		chord.CallNotify(succ)
+	}
+
+	for n := failedId; n > 0; n-- {
+		var finger *FingerEntry = &chord.node.FingerTable[n]
+		if finger.NodeAddress != failedNode {
+			break
+		}
+		finger.NodeAddress = succ
+	}
+}
+
+func (chord *Chord) CheckPred(_ *DeadCheck, _ *DeadCheck) error {
+	return nil
 }
 
 func (chord *Chord) Notify(notifyReq *NotifyRequest, resp *NotifyResponse) error {
@@ -165,7 +290,12 @@ func (chord *Chord) Notify(notifyReq *NotifyRequest, resp *NotifyResponse) error
 		resp.Success = true
 	} else {
 		// Ask our predecessor since the new node is not in between me and my predecessor
-		chord.tracer.Trace("Node %x IS NOT between me: %x and pred: %x (this should rarely happen)", &notifyReq.Identifier, &chord.node.Identifier, pred)
+		if !chord.CallCheckPred() {
+			resp.Success = true
+			chord.node.Predecessor = notifyReq.NodeAddress
+			return nil
+		}
+		chord.tracer.Trace("Node %x IS NOT between me: %x and pred: %x => forward question to pred", &notifyReq.Identifier, &chord.node.Identifier, pred)
 		resp.Success = false
 		resp.NewPredAddress = chord.node.Predecessor
 	}
@@ -184,15 +314,21 @@ func (chord *Chord) Join(joinReq *JoinRequest, Response *Response) error {
 	retCode := chord.find(&joinReq.Identifier, Response)
 
 	chord.chordSync.Unlock()
-	if retCode == ISSUCC {
+	if retCode == MYSUCC {
 		//Update all successors i.e. shift once
+		chord.tracer.Trace("Node: %s set as our succ", joinReq.NodeAddress)
 		chord.insertSuccessor(joinReq.NodeAddress)
 	} else if retCode == SOLONODE {
 		// If by myself then new node will be both pred an succ
 		chord.insertSuccessor(joinReq.NodeAddress)
 		chord.CallNotify(joinReq.NodeAddress)
+	} else if retCode == IAMSUCC {
+		// Insert between me and my pred
+		chord.node.Predecessor = Response.NodeAddress
 	} else {
+		//Pass along
 		chord.tracer.Trace("Checked in finger and got: %v\n", Response)
+		Response.IsSuccessor = false
 	}
 
 	return nil
@@ -203,7 +339,7 @@ func (chord *Chord) find(identifier *big.Int, response *Response) RetCode {
 	// If finger table is not initialized yet => call successors to resolve
 
 	// Check if solo in ring => return self
-	if chord.node.Successors[0] == chord.node.NodeAddress { // SOLO
+	if chord.node.Successors[0] == "X" { // SOLO
 		chord.tracer.Trace("Pred in solo case")
 		//Solo in ring => return ourself as succ
 		response.NodeAddress = chord.node.NodeAddress
@@ -218,7 +354,7 @@ func (chord *Chord) find(identifier *big.Int, response *Response) RetCode {
 		response.NodeAddress = chord.node.Successors[0]
 		response.Identifier = *currSucc
 		response.IsSuccessor = true
-		return ISSUCC
+		return MYSUCC
 	}
 	pred := hashString(chord.node.Predecessor)
 	if between(pred, identifier, &chord.node.Identifier, true) {
@@ -226,7 +362,7 @@ func (chord *Chord) find(identifier *big.Int, response *Response) RetCode {
 		response.NodeAddress = chord.node.NodeAddress
 		response.Identifier = chord.node.Identifier
 		response.IsSuccessor = true
-		return ISSUCC
+		return IAMSUCC
 	}
 
 	return chord.closestPreceedingNode(identifier, response)
@@ -248,81 +384,6 @@ func (chord *Chord) closestPreceedingNode(identifier *big.Int, joinResp *Respons
 	joinResp.Identifier = chord.node.FingerTable[keySize].Identifier
 	joinResp.NodeAddress = chord.node.FingerTable[keySize].NodeAddress
 	return PASSALONG
-}
-
-//////////////////////////////////////////////
-/////////////// RPC calls ////////////////////
-//////////////////////////////////////////////
-
-// Recursively notifies until it gets a successful notify
-func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
-	notifyReq := NotifyRequest{chord.node.NodeAddress, chord.node.Identifier}
-	resp := NotifyResponse{}
-	if !call("Chord.Notify", &notifyReq, &resp, string(nodeAddress)) {
-		// Cannot notify successor => find new predecessor from FIND
-		log.Fatal("Cannot notify successor")
-	}
-
-	if resp.Success {
-		chord.insertSuccessor(nodeAddress)
-		return
-	}
-	chord.tracer.Trace("This is very weird, should not happen")
-	//chord.CallNotify(resp.NewPredAddress)
-}
-
-func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
-	joinReq := JoinRequest{chord.node.NodeAddress, chord.node.Identifier}
-	Response := Response{}
-	fmt.Print(nodeAddress)
-	if !call("Chord.Join", &joinReq, &Response, string(nodeAddress)) {
-		log.Fatal("Cannot join specified node on chord ring")
-	}
-	// Join successful
-	chord.tracer.Trace("### Received closest predecessor ###\nIsSucc: %v, Received: %s\nId: %01x\n",
-		Response.IsSuccessor, Response.NodeAddress, &Response.Identifier)
-
-	if Response.IsSuccessor {
-		// TODO: notify node that I am new predecessor Notify node
-		//Shift successors
-		chord.CallNotify(Response.NodeAddress)
-	} else {
-		// Contact new node to get successor
-		chord.CallJoin(Response.NodeAddress)
-	}
-}
-
-func (chord *Chord) CallFindSuccessor(findReq *FindRequest, reponse *Response) bool {
-	if !call("Chord.FindSuccessor", &findReq, reponse, string(findReq.QueryNodeAddress)) {
-		chord.tracer.Trace("Successor not reachable, contact other users")
-		return false
-	}
-	return true
-}
-
-func (chord *Chord) CallStabilize() {
-	chord.chordSync.Lock()
-	stabilizeReq := StabilizeRequest{chord.node.NodeAddress, chord.node.Identifier}
-	succ := chord.node.Successors[0]
-	chord.chordSync.Unlock()
-	stabilizeResp := StabilizeResponse{}
-	if !call("Chord.Stabilize", &stabilizeReq, &stabilizeResp, string(succ)) {
-		// Our successor died: use finger table to find closest new node
-		chord.tracer.Trace("Our succ has died, try to find new succ")
-		// Find new successor with the find
-		// chord.chordSync.Unlock()
-		return
-	}
-
-	if !stabilizeResp.YouGood {
-		// Notify new pred !
-		// chord.tracer.Trace("Call to stabilize: WE ARE OUTDATED, contacting new pred %s", chord.node.Predecessor)
-		if stabilizeResp.NewPredAddress == chord.node.NodeAddress {
-			log.Fatal("What is wrooong")
-		}
-		chord.CallNotify(stabilizeResp.NewPredAddress)
-	}
-
 }
 
 func main() {
@@ -407,6 +468,7 @@ func (chord *Chord) initIntervals() {
 	chord.chordSync.Lock()
 	stabilizeTicker := time.NewTicker(chord.intervalTimings.Stabilize)
 	fingerTicker := time.NewTicker(chord.intervalTimings.FixFingers)
+	checkPred := time.NewTicker(chord.intervalTimings.CheckPred)
 	chord.chordSync.Unlock()
 	// Creating channel using make
 	tickerChan := make(chan bool)
@@ -424,6 +486,13 @@ func (chord *Chord) initIntervals() {
 			case <-fingerTicker.C:
 				chord.chordSync.Lock()
 				chord.FixFingers()
+				chord.chordSync.Unlock()
+			case <-checkPred.C:
+				chord.chordSync.Lock()
+				if !chord.CallCheckPred() {
+					chord.tracer.Trace("Predecessor died: waiting to get notified")
+					chord.node.Predecessor = "X"
+				}
 				chord.chordSync.Unlock()
 			}
 		}

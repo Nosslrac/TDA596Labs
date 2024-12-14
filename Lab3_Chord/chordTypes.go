@@ -29,8 +29,9 @@ type Chord struct {
 type RetCode int
 
 const SOLONODE RetCode = 0
-const ISSUCC RetCode = 1
-const PASSALONG RetCode = 2
+const MYSUCC RetCode = 1
+const IAMSUCC RetCode = 2
+const PASSALONG RetCode = 3
 
 type FingerEntry struct {
 	Identifier  big.Int

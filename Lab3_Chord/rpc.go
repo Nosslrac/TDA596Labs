@@ -46,6 +46,20 @@ type NotifyResponse struct {
 	NewPredAddress NodeAddress
 }
 
+type StoreFileRequest struct {
+	FileIdentifier big.Int
+	FileName       string
+	FileContent    []byte
+}
+
+type StoreFileResponse struct {
+	FileWriteSuccess error
+}
+
+type DeadCheck struct {
+	IsDead bool
+}
+
 func call(rpcname string, args interface{}, reply interface{}, address string) bool {
 	c, err := rpc.DialHTTP("tcp", address)
 

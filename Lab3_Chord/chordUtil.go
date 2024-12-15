@@ -15,7 +15,7 @@ func hashString(elt NodeAddress) *big.Int {
 	return mod(new(big.Int).SetBytes(hasher.Sum(nil)))
 }
 
-const keySize = 4
+const keySize = 8
 
 var two = big.NewInt(2)
 var hashMod = new(big.Int).Exp(two, big.NewInt(keySize), nil)

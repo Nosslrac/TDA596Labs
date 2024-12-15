@@ -33,6 +33,14 @@ const MYSUCC RetCode = 1
 const IAMSUCC RetCode = 2
 const PASSALONG RetCode = 3
 
+type FileStat int
+
+const FILEOK FileStat = 0
+const NOSUCHFILE FileStat = 1
+const READERR FileStat = 2
+const CREATEERR FileStat = 3
+const WRITEERR FileStat = 4
+
 type FingerEntry struct {
 	Identifier  big.Int
 	NodeAddress NodeAddress

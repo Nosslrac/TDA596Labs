@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"math/big"
 	"net"
@@ -29,6 +28,7 @@ type StabilizeRequest struct {
 type StabilizeResponse struct {
 	YouGood        bool
 	NewPredAddress NodeAddress
+	NodeSuccessors []NodeAddress
 }
 
 type FindRequest struct {
@@ -53,7 +53,19 @@ type StoreFileRequest struct {
 }
 
 type StoreFileResponse struct {
-	FileWriteSuccess error
+	FileStatus FileStat
+}
+
+type RetreiveFileRequest struct {
+	FileIdentifier big.Int
+	FileName       string
+}
+
+type RetreiveFileResponse struct {
+	NodeAddress NodeAddress
+	Identifier  big.Int
+	FileStatus  FileStat
+	FileContent []byte
 }
 
 type DeadCheck struct {
@@ -69,12 +81,7 @@ func call(rpcname string, args interface{}, reply interface{}, address string) b
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
+	return err == nil
 }
 
 // start a thread that listens for RPCs from worker.go

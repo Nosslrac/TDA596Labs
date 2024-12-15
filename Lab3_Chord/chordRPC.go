@@ -14,16 +14,19 @@ import (
 func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 	notifyReq := NotifyRequest{chord.node.NodeAddress, chord.node.Identifier}
 	resp := NotifyResponse{}
+	if nodeAddress == chord.node.NodeAddress {
+		chord.tracer.Trace("Trying to notify myself...")
+	}
 	if !call("Chord.Notify", &notifyReq, &resp, string(nodeAddress)) {
 		// Cannot notify successor => find new predecessor from FIND
-		log.Fatal("Cannot notify successor")
+		chord.tracer.Trace("Node to notify died")
+		return
 	}
 
 	if resp.Success {
 		chord.insertSuccessor(nodeAddress)
 		return
 	}
-	chord.tracer.Trace("This is very weird, should not happen")
 }
 
 func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
@@ -47,8 +50,13 @@ func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
 	}
 }
 
-func (chord *Chord) CallFindSuccessor(findReq *FindRequest, reponse *Response) bool {
-	if !call("Chord.FindSuccessor", &findReq, reponse, string(findReq.QueryNodeAddress)) {
+func (chord *Chord) CallFindSuccessor(findReq *FindRequest, response *Response) bool {
+	if findReq.QueryNodeAddress == chord.node.NodeAddress {
+		chord.tracer.Trace("Find succ on my self...")
+		response.NodeAddress = "X"
+		response.IsSuccessor = true
+	}
+	if !call("Chord.FindSuccessor", &findReq, response, string(findReq.QueryNodeAddress)) {
 		chord.tracer.Trace("Successor not reachable, contact other users")
 		return false
 	}
@@ -56,28 +64,35 @@ func (chord *Chord) CallFindSuccessor(findReq *FindRequest, reponse *Response) b
 }
 
 func (chord *Chord) CallStabilize() {
-	chord.chordSync.Lock()
+
 	stabilizeReq := StabilizeRequest{chord.node.NodeAddress, chord.node.Identifier}
 	succ := chord.node.Successors[0]
-	chord.chordSync.Unlock()
+	if succ == "X" { // S
+		chord.findNewSucc()
+	} else if succ == chord.node.NodeAddress {
+		// No need to stabilize when we are alone
+		return
+	}
 	stabilizeResp := StabilizeResponse{}
 	if !call("Chord.Stabilize", &stabilizeReq, &stabilizeResp, string(succ)) {
 		// Our successor died: use finger table to find closest new node
-		chord.tracer.Trace("Our succ has died, try to find new succ")
-		chord.chordSync.Lock()
-		chord.clearDeadNode(succ, true)
-		chord.chordSync.Unlock()
+		chord.clearDeadSucc()
 		return
 	}
 
 	if !stabilizeResp.YouGood {
 		// Notify new pred !
 		chord.tracer.Trace("Stabilize: Currsucc: %s, SuccsPred %s", succ, stabilizeResp.NewPredAddress)
-		if stabilizeResp.NewPredAddress == chord.node.NodeAddress {
-			log.Fatal("What is wrooong")
+		if stabilizeResp.NewPredAddress != chord.node.NodeAddress {
+			chord.CallNotify(stabilizeResp.NewPredAddress)
+		} else {
+			chord.tracer.Trace("Incoherent state: THIS SHOULD NOT HAPPEN")
+			return
 		}
-		chord.CallNotify(stabilizeResp.NewPredAddress)
+		return
+
 	}
+	chord.verifySuccs(&stabilizeResp)
 }
 
 func (chord *Chord) CallCheckPred() bool {
@@ -89,26 +104,56 @@ func (chord *Chord) CallStoreFile(storeFileReq *StoreFileRequest) {
 	// Use find to know what file to look for
 	storeFileResp := StoreFileResponse{}
 	destinationNode := chord.resolveIdentifier(&storeFileReq.FileIdentifier)
-	chord.tracer.Trace("Store file at id: %x => resolved to %s", storeFileReq.FileIdentifier, destinationNode)
 
-	if !call("Chord.StoreFile", &storeFileReq, &storeFileResp, string(destinationNode)) {
+	if !call("Chord.StoreFile", storeFileReq, &storeFileResp, string(destinationNode)) {
 		// Una
 		chord.tracer.Trace("Unable to store file at destination")
 		return
 	}
+
+	if storeFileResp.FileStatus != FILEOK {
+		if storeFileResp.FileStatus == CREATEERR {
+			chord.tracer.Trace("Store file failed: %s: CANNOT CREATE FILE", storeFileReq.FileName)
+		} else if storeFileResp.FileStatus == WRITEERR {
+			chord.tracer.Trace("Store file failed: %s: CANNOT WRITE TO FILE", storeFileReq.FileName)
+		}
+	}
+}
+
+func (chord *Chord) CallLookup(retreiveFileReq *RetreiveFileRequest) {
+	retreiveFileResp := RetreiveFileResponse{}
+	destinationNode := chord.resolveIdentifier(&retreiveFileReq.FileIdentifier)
+	fmt.Printf("Node: %s\n", destinationNode)
+	if !call("Chord.LookUp", retreiveFileReq, &retreiveFileResp, string(destinationNode)) {
+		// Una
+		chord.tracer.Trace("Unable to store file at destination")
+		return
+	}
+
+	if retreiveFileResp.FileStatus != FILEOK {
+		if retreiveFileResp.FileStatus == NOSUCHFILE {
+			chord.tracer.Trace("File look up fail: %s: NO SUCH FILE", retreiveFileReq.FileName)
+		} else if retreiveFileResp.FileStatus == READERR {
+			chord.tracer.Trace("File look up fail: %s: CANNOT READ FILE", retreiveFileReq.FileName)
+		}
+		return
+	}
+
+	fmt.Printf("\n## Lookup ##\nNode identifier: %x\nNode address: %s\n####### Content ##########\n%s\n\n", &retreiveFileResp.Identifier, retreiveFileResp.NodeAddress, retreiveFileResp.FileContent)
+
 }
 
 func (chord *Chord) resolveIdentifier(identifier *big.Int) NodeAddress {
 	// Look in finger table
 	response := Response{}
 	retCode := chord.find(identifier, &response)
-
+	chord.tracer.Trace("File %x found at %x", identifier, chord.node.Identifier)
 	if retCode != PASSALONG {
 		// Return what was found in find
 		return response.NodeAddress
 	}
 	// Ask node from finger table
-	findReq := FindRequest{response.Identifier, response.NodeAddress}
+	findReq := FindRequest{*identifier, response.NodeAddress}
 	for resolveIter := 0; resolveIter < 32; resolveIter++ {
 		resp := Response{}
 		if !chord.CallFindSuccessor(&findReq, &resp) {

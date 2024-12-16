@@ -21,8 +21,8 @@ func (tracer ChordTracer) Trace(format string, a ...any) {
 }
 
 func (chord *Chord) dump() {
-	fmt.Printf("### Node info ###\nNode identifier: %01x\nNode address: %s\nNode successors: %v\nNode predecessor: %v\n\n",
-		&chord.node.Identifier, chord.node.NodeAddress, chord.node.Successors, chord.node.Predecessor)
+	fmt.Printf("### Node info ###\nNode identifier: %01x\nNode address: %s\nNode successors: %v\nNode predecessor: %v\nStored files: %v\nStored fault tolerance: %v\n\n",
+		&chord.node.Identifier, chord.node.NodeAddress, chord.node.Successors, chord.node.Predecessor, chord.files, chord.replicatedFiles)
 	chord.printFingers()
 }
 
@@ -60,11 +60,11 @@ func (chord *Chord) parseInput(input string) {
 		}
 		file := hashString(NodeAddress(arg))
 		printHash(file)
-		storeFileReq := StoreFileRequest{*hashString(NodeAddress(arg)), arg, fileContent}
+		storeFileReq := StoreFileRequest{*hashString(NodeAddress(arg)), arg, fileContent, false}
 		chord.CallStoreFile(&storeFileReq)
 	case "Lookup":
 		if len(args) != 2 {
-			fmt.Println("Wrong usage of Lookup: Usage: Lookup <localFilePath>")
+			fmt.Println("Wrong usage of Lookup: Usage: Lookup <fileName>")
 			return
 		}
 		arg := args[1][:len(args[1])-1] //remove \n
@@ -97,10 +97,6 @@ func getFileContent(filePath string) []byte {
 ////////////////////////////////////////////////////
 //////////////// Interval functions ////////////////
 ////////////////////////////////////////////////////
-
-func (chord *Chord) insertSuccessor(succNode NodeAddress) {
-	chord.node.Successors = append([]NodeAddress{succNode}, chord.node.Successors[1:]...)
-}
 
 // Call under lock
 func (chord *Chord) verifySuccs(stabilizeResp *StabilizeResponse) {
@@ -169,10 +165,17 @@ func (chord *Chord) Stabilize(stabilizeReq *StabilizeRequest, stabilizeResp *Sta
 }
 
 func (chord *Chord) StoreFile(storeFileReq *StoreFileRequest, storeFileResp *StoreFileResponse) error {
-	file, err := os.Create(storeFileReq.FileName)
+	var filePath string
+	if storeFileReq.DuplicationReq {
+		filePath = fmt.Sprintf("%xReplicated/", &chord.node.Identifier) + storeFileReq.FileName
+	} else {
+		filePath = fmt.Sprintf("%xFiles/", &chord.node.Identifier) + storeFileReq.FileName
+	}
+
+	file, err := os.Create(filePath)
 
 	if err != nil {
-		fmt.Printf("Cannot create file %s: %v", storeFileReq.FileName, err)
+		fmt.Printf("Cannot create file %s: %v\n", filePath, err)
 		storeFileResp.FileStatus = CREATEERR
 		return err
 	}
@@ -184,13 +187,26 @@ func (chord *Chord) StoreFile(storeFileReq *StoreFileRequest, storeFileResp *Sto
 		storeFileResp.FileStatus = WRITEERR
 		return werr
 	}
-	chord.tracer.Trace("Stored file %s SUCCESS", storeFileReq.FileName)
 	storeFileResp.FileStatus = FILEOK
+
+	if storeFileReq.DuplicationReq { //Duplicate to successor if it is NOT a duplication request
+		chord.tracer.Trace("File %s duplicated", storeFileReq.FileName)
+		chord.replicatedFiles = append(chord.replicatedFiles, storeFileReq.FileName)
+		return nil
+	}
+
+	chord.tracer.Trace("Stored file %s", storeFileReq.FileName)
+	chord.files = append(chord.files, storeFileReq.FileName)
+	storeFileReq.DuplicationReq = true
+	defer chord.CallDuplication(storeFileReq)
 	return nil
 }
 
 func (chord *Chord) LookUp(retreiveFileReq *RetreiveFileRequest, retreiveFileResp *RetreiveFileResponse) error {
-	file, err := os.Open(retreiveFileReq.FileName)
+
+	filePath := fmt.Sprintf("%xFiles/%s", &chord.node.Identifier, retreiveFileReq.FileName)
+
+	file, err := os.Open(filePath)
 
 	if err != nil {
 		retreiveFileResp.FileContent = nil
@@ -227,17 +243,13 @@ func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
 		}
 	}
 
-	if nodeToAsk == chord.node.NodeAddress {
-		chord.tracer.Trace("Ask ourself for successor: BAD!")
-		return false
-	}
 	var finger *FingerEntry = &chord.node.FingerTable[fingerIndex]
+	if nodeToAsk == chord.node.NodeAddress { // Asking ourself means that we are the successor
+		finger.NodeAddress = chord.node.NodeAddress
+		return true
+	}
 	findReq := FindRequest{finger.Identifier, nodeToAsk}
 	for resolveIter := 0; resolveIter < 32; resolveIter++ {
-		if findReq.QueryNodeAddress == chord.node.NodeAddress {
-			return false
-		}
-
 		resp := Response{}
 		if !chord.CallFindSuccessor(&findReq, &resp) {
 			// If node doesn't respond try the next one
@@ -251,6 +263,11 @@ func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
 		}
 		// Query a better node for a better result
 		findReq.QueryNodeAddress = resp.NodeAddress
+
+		if findReq.QueryNodeAddress == chord.node.NodeAddress {
+			finger.NodeAddress = chord.node.NodeAddress
+			break
+		}
 	}
 	return true
 }
@@ -376,12 +393,6 @@ func (chord *Chord) Notify(notifyReq *NotifyRequest, resp *NotifyResponse) error
 		chord.node.Predecessor = notifyReq.NodeAddress
 		resp.Success = true
 	} else {
-		// Ask our predecessor since the new node is not in between me and my predecessor
-		// if !chord.CallCheckPred() {
-		// 	resp.Success = true
-		// 	chord.node.Predecessor = notifyReq.NodeAddress
-		// 	return nil
-		// }
 		chord.tracer.Trace("Node %x IS NOT between me: %x and pred: %x => forward question to pred", &notifyReq.Identifier, &chord.node.Identifier, pred)
 		resp.Success = false
 		resp.NewPredAddress = chord.node.Predecessor
@@ -404,11 +415,10 @@ func (chord *Chord) Join(joinReq *JoinRequest, Response *Response) error {
 	if retCode == MYSUCC {
 		//Update all successors i.e. shift once
 		chord.tracer.Trace("Node: %s set as our succ", joinReq.NodeAddress)
-		chord.insertSuccessor(joinReq.NodeAddress)
+		chord.node.Successors[0] = joinReq.NodeAddress
 	} else if retCode == SOLONODE {
 		// If by myself then new node will be both pred an succ
-		chord.insertSuccessor(joinReq.NodeAddress)
-		chord.CallNotify(joinReq.NodeAddress)
+		chord.node.Successors[0] = joinReq.NodeAddress
 	} else if retCode == IAMSUCC {
 		// Insert between me and my pred
 		chord.node.Predecessor = Response.NodeAddress
@@ -476,6 +486,7 @@ func (chord *Chord) closestPreceedingNode(identifier *big.Int, joinResp *Respons
 func main() {
 	chord := getArgs()
 	chord.initClient()
+	chord.initDuplication()
 
 	go chord.rpcListener()
 	fmt.Printf("Chord started: node address: %v\n", chord.node.NodeAddress)
@@ -514,6 +525,43 @@ func (chord *Chord) initClient() {
 	chord.node.FingerTable[0].Identifier = chord.node.Identifier
 	chord.node.FingerTable[0].NodeAddress = chord.node.NodeAddress
 	chord.node.Predecessor = "X"
+}
+
+func (chord *Chord) initDuplication() {
+	duplDir := fmt.Sprintf("%xReplicated", &chord.node.Identifier)
+	fileDir := fmt.Sprintf("%xFiles", &chord.node.Identifier)
+
+	if err := os.Mkdir(duplDir, 0o700); err != nil && os.IsExist(err) {
+		os.RemoveAll(duplDir)
+	}
+	if err := os.Mkdir(fileDir, 0o700); err != nil && os.IsExist(err) {
+		os.RemoveAll(fileDir)
+	}
+	os.Mkdir(fileDir, 0o700)
+	os.Mkdir(duplDir, 0o700)
+}
+
+func (chord *Chord) reassignDuplicatedToMe() {
+	if len(chord.replicatedFiles) == 0 {
+		return
+	}
+	// Called when our predecessor dies => store all files that we replicated
+	chord.tracer.Trace("Moving replicated files to our files")
+	duplDir := fmt.Sprintf("%xReplicated", &chord.node.Identifier)
+	entries, err := os.ReadDir(duplDir)
+	if err != nil {
+		log.Printf("Failure to move replicated files: %v", err)
+	}
+
+	fileDir := fmt.Sprintf("%xFiles/", &chord.node.Identifier)
+	duplDir += "/"
+	for _, entry := range entries {
+		if err := os.Rename(duplDir+entry.Name(), fileDir+entry.Name()); err != nil {
+			log.Printf("Failure moving %s: %v", entry.Name(), err)
+		}
+	}
+	chord.files = append(chord.files, chord.replicatedFiles...)
+	chord.replicatedFiles = chord.replicatedFiles[:0] // Clear replicated files
 }
 
 func getArgs() Chord {
@@ -559,6 +607,8 @@ func getArgs() Chord {
 			time.Millisecond * time.Duration(*checkPred),
 		},
 		*certPool,
+		make([]string, 0),
+		make([]string, 0),
 		ChordTracer{*verbose},
 		sync.Mutex{},
 	}
@@ -591,6 +641,7 @@ func (chord *Chord) initIntervals() {
 				chord.chordSync.Lock()
 				if !chord.CallCheckPred() {
 					// chord.tracer.Trace("Predecessor died: waiting to get notified")
+					chord.reassignDuplicatedToMe()
 					chord.node.Predecessor = "X"
 				}
 				chord.chordSync.Unlock()

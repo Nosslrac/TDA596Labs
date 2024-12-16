@@ -25,6 +25,10 @@ type Chord struct {
 	//TLS info
 	trustedCerts x509.CertPool
 
+	// Stored files
+	files           []string
+	replicatedFiles []string
+
 	// Sync and information
 	tracer    ChordTracer
 	chordSync sync.Mutex

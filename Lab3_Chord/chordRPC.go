@@ -10,7 +10,6 @@ import (
 /////////////// RPC calls ////////////////////
 //////////////////////////////////////////////
 
-// Recursively notifies until it gets a successful notify
 func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 	notifyReq := NotifyRequest{chord.node.NodeAddress, chord.node.Identifier}
 	resp := NotifyResponse{}
@@ -24,7 +23,7 @@ func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 	}
 
 	if resp.Success {
-		chord.insertSuccessor(nodeAddress)
+		chord.node.Successors[0] = nodeAddress
 		return
 	}
 }
@@ -32,7 +31,6 @@ func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
 	joinReq := JoinRequest{chord.node.NodeAddress, chord.node.Identifier}
 	Response := Response{}
-	fmt.Print(nodeAddress)
 	if !chord.call("Chord.Join", &joinReq, &Response, string(nodeAddress)) {
 		log.Fatal("Cannot join specified node on chord ring")
 	}
@@ -43,10 +41,10 @@ func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
 	if Response.IsSuccessor {
 		// TODO: notify node that I am new predecessor Notify node
 		//Shift successors
-		chord.CallNotify(Response.NodeAddress)
+		defer chord.CallNotify(Response.NodeAddress)
 	} else {
-		// Contact new node to get successor
-		chord.CallJoin(Response.NodeAddress)
+		chord.tracer.Trace("Retrying join with %s", Response.NodeAddress)
+		go chord.CallJoin(Response.NodeAddress)
 	}
 }
 
@@ -84,7 +82,7 @@ func (chord *Chord) CallStabilize() {
 		// Notify new pred !
 		chord.tracer.Trace("Stabilize: Currsucc: %s, SuccsPred %s", succ, stabilizeResp.NewPredAddress)
 		if stabilizeResp.NewPredAddress != chord.node.NodeAddress {
-			chord.CallNotify(stabilizeResp.NewPredAddress)
+			defer chord.CallNotify(stabilizeResp.NewPredAddress)
 		} else {
 			chord.tracer.Trace("Incoherent state: THIS SHOULD NOT HAPPEN")
 			return
@@ -103,13 +101,35 @@ func (chord *Chord) CallCheckPred() bool {
 	return chord.call("Chord.CheckPred", &deadCheck, &deadCheck, string(chord.node.Predecessor))
 }
 
+func (chord *Chord) CallDuplication(storeFileReq *StoreFileRequest) {
+	// Request duplication to your successor
+	storeFileResp := StoreFileResponse{}
+	if chord.node.Successors[0] == "X" {
+		chord.tracer.Trace("Duplication aborted: successor died")
+		return
+	}
+
+	chord.tracer.Trace("Duplicating file: %s to our successor %s", storeFileReq.FileName, chord.node.Successors[0])
+	if !chord.call("Chord.StoreFile", storeFileReq, &storeFileResp, string(chord.node.Successors[0])) {
+		chord.tracer.Trace("Unable to contact successor")
+		return
+	}
+
+	if storeFileResp.FileStatus != FILEOK {
+		if storeFileResp.FileStatus == CREATEERR {
+			chord.tracer.Trace("Store file failed: %s: CANNOT CREATE FILE", storeFileReq.FileName)
+		} else if storeFileResp.FileStatus == WRITEERR {
+			chord.tracer.Trace("Store file failed: %s: CANNOT WRITE TO FILE", storeFileReq.FileName)
+		}
+	}
+}
+
 func (chord *Chord) CallStoreFile(storeFileReq *StoreFileRequest) {
 	// Use find to know what file to look for
 	storeFileResp := StoreFileResponse{}
 	destinationNode := chord.resolveIdentifier(&storeFileReq.FileIdentifier)
 
 	if !chord.call("Chord.StoreFile", storeFileReq, &storeFileResp, string(destinationNode)) {
-		// Una
 		chord.tracer.Trace("Unable to store file at destination")
 		return
 	}
@@ -150,14 +170,21 @@ func (chord *Chord) resolveIdentifier(identifier *big.Int) NodeAddress {
 	// Look in finger table
 	response := Response{}
 	retCode := chord.find(identifier, &response)
-	chord.tracer.Trace("File %x found at %x", identifier, chord.node.Identifier)
+	chord.tracer.Trace("File %x found at %x", identifier, &chord.node.Identifier)
 	if retCode != PASSALONG {
 		// Return what was found in find
 		return response.NodeAddress
 	}
+	if response.NodeAddress == chord.node.NodeAddress {
+		return chord.node.NodeAddress
+	}
+
 	// Ask node from finger table
 	findReq := FindRequest{*identifier, response.NodeAddress}
 	for resolveIter := 0; resolveIter < 32; resolveIter++ {
+		if findReq.QueryNodeAddress == chord.node.NodeAddress {
+			return chord.node.NodeAddress
+		}
 		resp := Response{}
 		if !chord.CallFindSuccessor(&findReq, &resp) {
 			chord.tracer.Trace("Failure to contact node which should store the file %s: Abort stor", response.NodeAddress)

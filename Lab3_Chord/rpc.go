@@ -50,6 +50,7 @@ type StoreFileRequest struct {
 	FileIdentifier big.Int
 	FileName       string
 	FileContent    []byte
+	DuplicationReq bool
 }
 
 type StoreFileResponse struct {

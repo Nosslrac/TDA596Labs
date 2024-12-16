@@ -112,7 +112,7 @@ func (chord *Chord) CallStabilize() {
 
 func (chord *Chord) CallCheckPred() bool {
 	chord.chordSync.Lock()
-	
+
 	if chord.node.Predecessor == "X" {
 		chord.chordSync.Unlock()
 		return false
@@ -190,8 +190,14 @@ func (chord *Chord) CallLookup(retreiveFileReq *RetreiveFileRequest) {
 		}
 		return
 	}
+	content, err :=  decrypt(retreiveFileResp.FileContent, chord.encKey)
+	if err != nil {
+		fmt.Printf("Decrypt failure: %v\n", err)
+		return
+	}
 
-	fmt.Printf("\n## Lookup ##\nNode identifier: %x\nNode address: %s\n####### Content ##########\n%s\n\n", &retreiveFileResp.Identifier, retreiveFileResp.NodeAddress, retreiveFileResp.FileContent)
+	fmt.Printf("\n## Lookup ##\nNode identifier: %x\nNode address: %s\n####### Content ##########\n%s\n\n", 
+	&retreiveFileResp.Identifier, retreiveFileResp.NodeAddress, content)
 
 }
 

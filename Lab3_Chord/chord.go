@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/x509"
 	"flag"
 	"fmt"
@@ -53,7 +56,7 @@ func (chord *Chord) parseInput(input string) {
 			return
 		}
 		arg := args[1][:len(args[1])-1] //remove \n
-		fileContent := getFileContent(arg)
+		fileContent := getFileContent(arg, chord.encKey)
 		if fileContent == nil {
 			chord.tracer.Trace("File empty: Abort StoreFile")
 			return
@@ -61,7 +64,9 @@ func (chord *Chord) parseInput(input string) {
 		file := hashString(NodeAddress(arg))
 		printHash(file)
 		storeFileReq := StoreFileRequest{*file, arg, fileContent, false}
+		chord.chordSync.Unlock()
 		chord.CallStoreFile(&storeFileReq)
+		chord.chordSync.Lock()
 	case "Lookup":
 		if len(args) != 2 {
 			fmt.Println("Wrong usage of Lookup: Usage: Lookup <fileName>")
@@ -79,7 +84,7 @@ func (chord *Chord) parseInput(input string) {
 	}
 }
 
-func getFileContent(filePath string) []byte {
+func getFileContent(filePath string, key []byte) []byte {
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Printf("Couldn't open file: %v\n", err)
@@ -89,6 +94,12 @@ func getFileContent(filePath string) []byte {
 	content, rerr := io.ReadAll(file)
 	if rerr != nil {
 		fmt.Printf("Couldn't read file %v\n", rerr)
+		return nil
+	}
+
+	content, err = encrypt(content, key)
+	if err != nil {
+		fmt.Printf("Could not encrypt content: \n %v \n", err)
 		return nil
 	}
 	return content
@@ -165,6 +176,8 @@ func (chord *Chord) Stabilize(stabilizeReq *StabilizeRequest, stabilizeResp *Sta
 }
 
 func (chord *Chord) StoreFile(storeFileReq *StoreFileRequest, storeFileResp *StoreFileResponse) error {
+	chord.chordSync.Lock()
+	defer chord.chordSync.Unlock()
 	var filePath string
 	if storeFileReq.DuplicationReq {
 		filePath = fmt.Sprintf("%xReplicated/", &chord.node.Identifier) + storeFileReq.FileName
@@ -198,7 +211,9 @@ func (chord *Chord) StoreFile(storeFileReq *StoreFileRequest, storeFileResp *Sto
 	chord.tracer.Trace("Stored file %s", storeFileReq.FileName)
 	chord.files = append(chord.files, storeFileReq.FileName)
 	storeFileReq.DuplicationReq = true
-	defer chord.CallDuplication(storeFileReq)
+	chord.chordSync.Unlock()
+	chord.CallDuplication(storeFileReq)
+	chord.chordSync.Lock()
 	return nil
 }
 
@@ -574,7 +589,9 @@ func (chord *Chord) reassignToPred() {
 		
 		os.Remove(fileDir + entry)
 		storeFileReq := StoreFileRequest{*fileId, entry, content, false}
+		chord.chordSync.Unlock()
 		chord.CallStoreFile(&storeFileReq)
+		chord.chordSync.Lock()
 	}
 	if len(keepFiles) < len(chord.files) {
 		chord.tracer.Trace("Moving some files to our predecessor")
@@ -634,6 +651,7 @@ func getArgs() Chord {
 	stabilize := flag.Int("ts", 2000, "Interval between stabilize")
 	fixFingers := flag.Int("tff", 2000, "Interval between fix fingers")
 	checkPred := flag.Int("tcp", 2000, "Interval between check predecessors")
+	encode := flag.String("e", "1623456022901234", "Encoded key")
 
 	identifier := flag.String("i", "XXX", "Identifier")
 	numSucc := flag.Int("r", 2, "Number of successors")
@@ -668,6 +686,7 @@ func getArgs() Chord {
 		*certPool,
 		make([]string, 0),
 		make([]string, 0),
+		[]byte(*encode),
 		ChordTracer{*verbose},
 		sync.Mutex{},
 	}
@@ -725,4 +744,40 @@ func (chord *Chord) initIntervals() {
 			}
 		}
 	}()
+}
+
+
+func encrypt(content []byte, encKey []byte) ([]byte, error) {
+    block, err := aes.NewCipher(encKey)
+    if err != nil {
+        return content, err
+    }
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return content, err
+    }
+    nonce := make([]byte, gcm.NonceSize())
+    if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+        return content, err
+    }
+
+    return gcm.Seal(nonce, nonce, content, nil), nil
+}
+
+func decrypt(content []byte, encKey []byte) ([]byte, error) {
+    block, err := aes.NewCipher(encKey)
+    if err != nil {
+        return content, err
+    }
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return content, err
+    }
+    nonce := content[:gcm.NonceSize()]
+    content = content[gcm.NonceSize():]
+    plainText, err := gcm.Open(nil, nonce, content, nil)
+    if err != nil {
+        return content, err
+    }
+    return plainText, nil
 }

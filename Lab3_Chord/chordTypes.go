@@ -28,6 +28,7 @@ type Chord struct {
 	// Stored files
 	files           []string
 	replicatedFiles []string
+	encKey []byte
 
 	// Sync and information
 	tracer    ChordTracer

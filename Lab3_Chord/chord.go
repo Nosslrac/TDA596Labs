@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -476,7 +477,7 @@ func main() {
 	chord := getArgs()
 	chord.initClient()
 
-	chord.rpcListener()
+	go chord.rpcListener()
 	fmt.Printf("Chord started: node address: %v\n", chord.node.NodeAddress)
 	printHash(&chord.node.Identifier)
 	if chord.joinNodeIp == "XXX" {
@@ -535,8 +536,20 @@ func getArgs() Chord {
 		log.Fatalf("Arguments for --ts --tff --tcp not in range")
 	}
 
+	rootCAcert, err := os.ReadFile("cert/ca-cert.pem")
+	if err != nil {
+		log.Fatalf("Cannot load certificate: %v", err)
+	}
+
+	certPool := x509.NewCertPool()
+
+	if !certPool.AppendCertsFromPEM(rootCAcert) {
+		log.Fatal("Failed to add CAs certificate")
+	}
+
 	nodeAddress := *address + ":" + *portvar
 	id := getIdentifier(NodeAddress(nodeAddress), *identifier)
+	fmt.Print(certPool)
 	return Chord{"tcp",
 		NodeInfo{*id, NodeAddress(nodeAddress), "", make([]FingerEntry, keySize+1), make([]NodeAddress, *numSucc)},
 		*numSucc, *joinAddress, *joinPort,
@@ -545,6 +558,7 @@ func getArgs() Chord {
 			time.Millisecond * time.Duration(*fixFingers),
 			time.Millisecond * time.Duration(*checkPred),
 		},
+		*certPool,
 		ChordTracer{*verbose},
 		sync.Mutex{},
 	}
@@ -576,7 +590,7 @@ func (chord *Chord) initIntervals() {
 			case <-checkPred.C:
 				chord.chordSync.Lock()
 				if !chord.CallCheckPred() {
-					chord.tracer.Trace("Predecessor died: waiting to get notified")
+					// chord.tracer.Trace("Predecessor died: waiting to get notified")
 					chord.node.Predecessor = "X"
 				}
 				chord.chordSync.Unlock()

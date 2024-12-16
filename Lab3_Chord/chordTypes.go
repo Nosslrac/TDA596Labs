@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/x509"
 	"math/big"
 	"sync"
 	"time"
@@ -20,6 +21,9 @@ type Chord struct {
 
 	// Chord specific timings
 	intervalTimings Timings
+
+	//TLS info
+	trustedCerts x509.CertPool
 
 	// Sync and information
 	tracer    ChordTracer

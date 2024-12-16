@@ -1,10 +1,10 @@
 package main
 
 import (
+	"crypto/tls"
 	"log"
 	"math/big"
 	"net"
-	"net/http"
 	"net/rpc"
 	"strings"
 )
@@ -72,30 +72,61 @@ type DeadCheck struct {
 	IsDead bool
 }
 
-func call(rpcname string, args interface{}, reply interface{}, address string) bool {
-	c, err := rpc.DialHTTP("tcp", address)
+func (chord *Chord) call(rpcname string, args interface{}, reply interface{}, address string) bool {
+	conf := &tls.Config{
+		RootCAs:            chord.trustedCerts.Clone(),
+		InsecureSkipVerify: true,
+	}
 
+	tlsConn, err := tls.Dial("tcp", address, conf)
 	if err != nil {
+		log.Println(err)
 		return false
 	}
-	defer c.Close()
+	defer tlsConn.Close()
 
-	err = c.Call(rpcname, args, reply)
+	client := rpc.NewClient(tlsConn)
+	err = client.Call(rpcname, args, reply)
+
 	return err == nil
+
 }
 
-// start a thread that listens for RPCs from worker.go
+// Start an rpcListener server on TLS connection
 func (chord *Chord) rpcListener() {
-	rpc.Register(chord)
-	rpc.HandleHTTP()
 
-	chord.tracer.Trace("Rpc handler listening on port %s", strings.Split(string(chord.node.NodeAddress), ":")[1])
-	l, e := net.Listen(chord.protocol, ":"+strings.Split(string(chord.node.NodeAddress), ":")[1])
-	// sockname := coordinatorSock()
-	// os.Remove(sockname)
-	// l, e := net.Listen("unix", sockname)
-	if e != nil {
-		log.Fatal("listen error:", e)
+	rpc.Register(chord)
+	// rpc.HandleHTTP()
+	cert, err := tls.LoadX509KeyPair("cert/complete-cert.pem", "cert/server-key.pem")
+	if err != nil {
+		log.Fatalf("Cannot get server cert: %v", err)
 	}
-	go http.Serve(l, nil)
+
+	if len(cert.Certificate) != 2 {
+		log.Fatal("server.crt should have 2 concatenated certificates: server + CA")
+	}
+
+	conf := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.NoClientCert,
+	}
+	listener, err := tls.Listen("tcp", ":"+strings.Split(string(chord.node.NodeAddress), ":")[1], conf)
+
+	if err != nil {
+		log.Fatalf("rpcListener: listen error: %v", err)
+	}
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Handling rpc connection failure: %v", err)
+			break
+		}
+		go handleTlsConnection(conn)
+	}
+}
+
+func handleTlsConnection(conn net.Conn) {
+	defer conn.Close()
+	rpc.ServeConn(conn)
 }

@@ -17,7 +17,7 @@ func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 	if nodeAddress == chord.node.NodeAddress {
 		chord.tracer.Trace("Trying to notify myself...")
 	}
-	if !call("Chord.Notify", &notifyReq, &resp, string(nodeAddress)) {
+	if !chord.call("Chord.Notify", &notifyReq, &resp, string(nodeAddress)) {
 		// Cannot notify successor => find new predecessor from FIND
 		chord.tracer.Trace("Node to notify died")
 		return
@@ -33,7 +33,7 @@ func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
 	joinReq := JoinRequest{chord.node.NodeAddress, chord.node.Identifier}
 	Response := Response{}
 	fmt.Print(nodeAddress)
-	if !call("Chord.Join", &joinReq, &Response, string(nodeAddress)) {
+	if !chord.call("Chord.Join", &joinReq, &Response, string(nodeAddress)) {
 		log.Fatal("Cannot join specified node on chord ring")
 	}
 	// Join successful
@@ -56,7 +56,7 @@ func (chord *Chord) CallFindSuccessor(findReq *FindRequest, response *Response) 
 		response.NodeAddress = "X"
 		response.IsSuccessor = true
 	}
-	if !call("Chord.FindSuccessor", &findReq, response, string(findReq.QueryNodeAddress)) {
+	if !chord.call("Chord.FindSuccessor", &findReq, response, string(findReq.QueryNodeAddress)) {
 		chord.tracer.Trace("Successor not reachable, contact other users")
 		return false
 	}
@@ -74,7 +74,7 @@ func (chord *Chord) CallStabilize() {
 		return
 	}
 	stabilizeResp := StabilizeResponse{}
-	if !call("Chord.Stabilize", &stabilizeReq, &stabilizeResp, string(succ)) {
+	if !chord.call("Chord.Stabilize", &stabilizeReq, &stabilizeResp, string(succ)) {
 		// Our successor died: use finger table to find closest new node
 		chord.clearDeadSucc()
 		return
@@ -96,8 +96,11 @@ func (chord *Chord) CallStabilize() {
 }
 
 func (chord *Chord) CallCheckPred() bool {
+	if chord.node.Predecessor == "X" {
+		return false
+	}
 	deadCheck := DeadCheck{}
-	return call("Chord.CheckPred", &deadCheck, &deadCheck, string(chord.node.Predecessor))
+	return chord.call("Chord.CheckPred", &deadCheck, &deadCheck, string(chord.node.Predecessor))
 }
 
 func (chord *Chord) CallStoreFile(storeFileReq *StoreFileRequest) {
@@ -105,7 +108,7 @@ func (chord *Chord) CallStoreFile(storeFileReq *StoreFileRequest) {
 	storeFileResp := StoreFileResponse{}
 	destinationNode := chord.resolveIdentifier(&storeFileReq.FileIdentifier)
 
-	if !call("Chord.StoreFile", storeFileReq, &storeFileResp, string(destinationNode)) {
+	if !chord.call("Chord.StoreFile", storeFileReq, &storeFileResp, string(destinationNode)) {
 		// Una
 		chord.tracer.Trace("Unable to store file at destination")
 		return
@@ -124,7 +127,7 @@ func (chord *Chord) CallLookup(retreiveFileReq *RetreiveFileRequest) {
 	retreiveFileResp := RetreiveFileResponse{}
 	destinationNode := chord.resolveIdentifier(&retreiveFileReq.FileIdentifier)
 	fmt.Printf("Node: %s\n", destinationNode)
-	if !call("Chord.LookUp", retreiveFileReq, &retreiveFileResp, string(destinationNode)) {
+	if !chord.call("Chord.LookUp", retreiveFileReq, &retreiveFileResp, string(destinationNode)) {
 		// Una
 		chord.tracer.Trace("Unable to store file at destination")
 		return

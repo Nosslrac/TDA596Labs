@@ -19,10 +19,14 @@ RUN go build -race -o chord
 
 FROM alpine:latest
 WORKDIR /app/
-# RUN apk add --no-cache libc6-compat ca-certificates tzdata
+RUN apk add --no-cache libc6-compat ca-certificates tzdata
+RUN apk add openssl
 
 #Add the necessary files to run the coordinator
-COPY --from=builder /app/chord /app/*.txt /app/cert/ca-cert.pem /app/cert/ca-key.pem /app/genTLS.sh ./
+COPY --from=builder /app/chord /app/*.txt /app/genTLS.sh ./
+COPY --from=builder /app/cert/ca-cert.pem /app/cert/ca-key.pem ./cert/
+
+RUN ./genTLS.sh
 
 # Run
 CMD ["./chord -a localhost -p 1111 --ts 2000 --tff 3000 --tcp 5000 -r 4 -v"]

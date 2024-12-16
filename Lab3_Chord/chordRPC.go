@@ -112,6 +112,7 @@ func (chord *Chord) CallStabilize() {
 
 func (chord *Chord) CallCheckPred() bool {
 	chord.chordSync.Lock()
+	
 	if chord.node.Predecessor == "X" {
 		chord.chordSync.Unlock()
 		return false

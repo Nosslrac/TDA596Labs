@@ -60,7 +60,7 @@ func (chord *Chord) parseInput(input string) {
 		}
 		file := hashString(NodeAddress(arg))
 		printHash(file)
-		storeFileReq := StoreFileRequest{*hashString(NodeAddress(arg)), arg, fileContent, false}
+		storeFileReq := StoreFileRequest{*file, arg, fileContent, false}
 		chord.CallStoreFile(&storeFileReq)
 	case "Lookup":
 		if len(args) != 2 {
@@ -70,7 +70,7 @@ func (chord *Chord) parseInput(input string) {
 		arg := args[1][:len(args[1])-1] //remove \n
 		file := hashString(NodeAddress(arg))
 		printHash(file)
-		retreiveFileReq := RetreiveFileRequest{*hashString(NodeAddress(arg)), arg}
+		retreiveFileReq := RetreiveFileRequest{*file, arg}
 		chord.CallLookup(&retreiveFileReq)
 	case "PrintState":
 		chord.dump()
@@ -547,6 +547,42 @@ func (chord *Chord) initDuplication() {
 	os.Mkdir(duplDir, 0o700)
 }
 
+func (chord *Chord) reassignToPred() {
+	if len(chord.files) == 0 || chord.node.Predecessor == chord.node.NodeAddress{
+		return
+	}
+	// Called when our predecessor dies => store all files that we replicated
+	fileDir := fmt.Sprintf("%xFiles/", &chord.node.Identifier)
+
+	var keepFiles []string
+
+	for _, entry := range chord.files {
+
+		fileId := hashString(NodeAddress(entry))
+		if between(hashString(chord.node.Predecessor), fileId, &chord.node.Identifier, true) {
+			// Send to predecessor
+			keepFiles = append(keepFiles, entry)
+			continue
+		}
+
+		content, err := os.ReadFile(fileDir + entry)
+		
+		if err != nil {
+			log.Printf("Failure redist %s to our predecessor: %v", entry, err)
+			continue
+		}
+		
+		os.Remove(fileDir + entry)
+		storeFileReq := StoreFileRequest{*fileId, entry, content, false}
+		chord.CallStoreFile(&storeFileReq)
+	}
+	if len(keepFiles) < len(chord.files) {
+		chord.tracer.Trace("Moving some files to our predecessor")
+		chord.files = keepFiles
+	}
+}
+
+
 func (chord *Chord) reassignDuplicatedToMe() {
 	if len(chord.replicatedFiles) == 0 {
 		return
@@ -642,7 +678,6 @@ func (chord *Chord) initIntervals() {
 	stabilizeTicker := time.NewTicker(chord.intervalTimings.Stabilize)
 	fingerTicker := time.NewTicker(chord.intervalTimings.FixFingers)
 	checkPred := time.NewTicker(chord.intervalTimings.CheckPred)
-	checkRedist := time.NewTicker(time.Duration(time.Second * 5))
 	chord.chordSync.Unlock()
 	// Creating channel using make
 	tickerChan := make(chan bool)
@@ -682,9 +717,11 @@ func (chord *Chord) initIntervals() {
 					chord.reassignDuplicatedToMe()
 					chord.node.Predecessor = "X"
 					chord.chordSync.Unlock()
+				} else {
+					chord.chordSync.Lock()
+					chord.reassignToPred()
+					chord.chordSync.Unlock()
 				}
-			case <-checkRedist.C:
-
 			}
 		}
 	}()

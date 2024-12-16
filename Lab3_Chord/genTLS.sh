@@ -15,6 +15,4 @@ openssl x509 -req -in server-req.pem -days 60 -CA ca-cert.pem -CAkey ca-key.pem 
 echo "Server's signed certificate"
 
 cat server-cert.pem ca-cert.pem > complete-cert.pem
-
-cat server-cert.pem
 # openssl x509 -in server-cert.pem -noout -text

@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net"
 	"net/rpc"
+	"runtime/debug"
 	"strings"
 )
 
@@ -77,6 +78,10 @@ func (chord *Chord) call(rpcname string, args interface{}, reply interface{}, ad
 	conf := &tls.Config{
 		RootCAs:            chord.trustedCerts.Clone(),
 		InsecureSkipVerify: true,
+	}
+	if string(chord.node.NodeAddress) == address {
+		debug.PrintStack()
+		log.Fatal("CALLING MY SELF")
 	}
 
 	tlsConn, err := tls.Dial("tcp", address, conf)

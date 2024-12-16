@@ -62,6 +62,7 @@ type NodeInfo struct {
 	Predecessor NodeAddress
 	FingerTable []FingerEntry
 	Successors  []NodeAddress
+	JoinPending bool
 	// Add more
 }
 

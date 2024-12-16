@@ -251,12 +251,15 @@ func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
 	findReq := FindRequest{finger.Identifier, nodeToAsk}
 	for resolveIter := 0; resolveIter < 32; resolveIter++ {
 		resp := Response{}
+		chord.chordSync.Unlock()
 		if !chord.CallFindSuccessor(&findReq, &resp) {
 			// If node doesn't respond try the next one
 			// chord.tracer.Trace("Failure to contact finger %s: Retry next round", findReq.QueryNodeAddress)
+			chord.chordSync.Lock()
 			finger.NodeAddress = "X"
 			return false
 		}
+		chord.chordSync.Lock()
 		if resp.IsSuccessor {
 			finger.NodeAddress = resp.NodeAddress
 			break
@@ -273,7 +276,8 @@ func (chord *Chord) resolveFinger(nodeToAsk NodeAddress, fingerIndex int) bool {
 }
 
 func (chord *Chord) FixFingers() {
-
+	chord.chordSync.Lock()
+	defer chord.chordSync.Unlock()
 	validSucc := chord.node.Successors[0] != "X"
 	succId := hashString(chord.node.Successors[0])
 
@@ -299,15 +303,16 @@ func (chord *Chord) FixFingers() {
 		if !chord.resolveFinger(askNode, n) { // If this failes
 
 		}
-		// chord.tracer.Trace("Calling resolve with %s: resolved to %s", askNode, finger.NodeAddress)
-		// chord.tracer.Trace("Finger %x (%s) is the closest successor", hashString(finger.NodeAddress), finger.NodeAddress)
 	}
-	// chord.tracer.Trace("########################\n")
 }
 
 // Executed under lock
 func (chord *Chord) findNewSucc() {
 	// TODO: read succ list instead
+	if len(chord.node.Successors) > 1 {
+		chord.node.Successors = append(chord.node.Successors[1:], "X")
+		return
+	}
 
 	validFingerIndex := chord.getNextValidFinger(1)
 
@@ -424,7 +429,7 @@ func (chord *Chord) Join(joinReq *JoinRequest, Response *Response) error {
 		chord.node.Predecessor = Response.NodeAddress
 	} else {
 		//Pass along
-		chord.tracer.Trace("Ask this node %s\n", Response.NodeAddress)
+		chord.tracer.Trace("Node %s should ask this node %s\n", joinReq.NodeAddress, Response.NodeAddress)
 		Response.IsSuccessor = false
 	}
 
@@ -492,6 +497,7 @@ func main() {
 	fmt.Printf("Chord started: node address: %v\n", chord.node.NodeAddress)
 	printHash(&chord.node.Identifier)
 	if chord.joinNodeIp == "XXX" {
+		chord.node.JoinPending = false
 		chord.Create()
 	} else {
 		chord.CallJoin(NodeAddress(chord.joinNodeIp + ":" + chord.joinNodePort))
@@ -559,9 +565,27 @@ func (chord *Chord) reassignDuplicatedToMe() {
 		if err := os.Rename(duplDir+entry.Name(), fileDir+entry.Name()); err != nil {
 			log.Printf("Failure moving %s: %v", entry.Name(), err)
 		}
+		file, err := os.Open(fileDir + entry.Name())
+		if err != nil {
+			log.Printf("Failure sending %s to our successor: %v", entry.Name(), err)
+			continue
+		}
+
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Printf("Failure sending %s to our successor: %v", entry.Name(), err)
+			continue
+		}
+
+		storeFileReq := StoreFileRequest{*hashString(NodeAddress(entry.Name())), entry.Name(), content, true}
+		chord.CallDuplication(&storeFileReq)
 	}
 	chord.files = append(chord.files, chord.replicatedFiles...)
 	chord.replicatedFiles = chord.replicatedFiles[:0] // Clear replicated files
+}
+
+func (chord *Chord) sendFilesToPred() {
+
 }
 
 func getArgs() Chord {
@@ -597,9 +621,8 @@ func getArgs() Chord {
 
 	nodeAddress := *address + ":" + *portvar
 	id := getIdentifier(NodeAddress(nodeAddress), *identifier)
-	fmt.Print(certPool)
 	return Chord{"tcp",
-		NodeInfo{*id, NodeAddress(nodeAddress), "", make([]FingerEntry, keySize+1), make([]NodeAddress, *numSucc)},
+		NodeInfo{*id, NodeAddress(nodeAddress), "", make([]FingerEntry, keySize+1), make([]NodeAddress, *numSucc), true},
 		*numSucc, *joinAddress, *joinPort,
 		Timings{
 			time.Millisecond * time.Duration(*stabilize),
@@ -619,9 +642,28 @@ func (chord *Chord) initIntervals() {
 	stabilizeTicker := time.NewTicker(chord.intervalTimings.Stabilize)
 	fingerTicker := time.NewTicker(chord.intervalTimings.FixFingers)
 	checkPred := time.NewTicker(chord.intervalTimings.CheckPred)
+	checkRedist := time.NewTicker(time.Duration(time.Second * 5))
 	chord.chordSync.Unlock()
 	// Creating channel using make
 	tickerChan := make(chan bool)
+
+	chord.chordSync.Lock()
+	ready := chord.node.JoinPending
+	chord.chordSync.Unlock()
+
+	count := 0
+	for ready && count < 30 {
+		count++
+		time.Sleep(time.Millisecond * 200)
+		chord.chordSync.Lock()
+		ready = chord.node.JoinPending
+		chord.chordSync.Unlock()
+	}
+	chord.tracer.Trace("Setup exited")
+	if count > 25 {
+		chord.dump()
+		log.Fatalf("Setup took too long: exiting")
+	}
 
 	go func() {
 		for {
@@ -630,21 +672,19 @@ func (chord *Chord) initIntervals() {
 				return
 			// interval task
 			case <-stabilizeTicker.C:
-				chord.chordSync.Lock()
 				chord.CallStabilize()
-				chord.chordSync.Unlock()
 			case <-fingerTicker.C:
-				chord.chordSync.Lock()
 				chord.FixFingers()
-				chord.chordSync.Unlock()
 			case <-checkPred.C:
-				chord.chordSync.Lock()
 				if !chord.CallCheckPred() {
 					// chord.tracer.Trace("Predecessor died: waiting to get notified")
+					chord.chordSync.Lock()
 					chord.reassignDuplicatedToMe()
 					chord.node.Predecessor = "X"
+					chord.chordSync.Unlock()
 				}
-				chord.chordSync.Unlock()
+			case <-checkRedist.C:
+
 			}
 		}
 	}()

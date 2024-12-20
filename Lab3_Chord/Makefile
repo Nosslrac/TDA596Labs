@@ -25,6 +25,9 @@ rune: build cert
 runf: build cert
 	./chord -a localhost -p 7777 --ts 2000 --tff 3000 --tcp 5000 -r 4 -v -jp 1111 -ja localhost
 
+rung: build cert
+	./chord -a localhost -p 8888 --ts 2000 --tff 3000 --tcp 5000 -r 4 -v -jp 1111 -ja localhost
+
 cert:
 	chmod +x genTLS.sh; ./genTLS.sh
 

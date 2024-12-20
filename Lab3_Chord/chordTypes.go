@@ -28,7 +28,7 @@ type Chord struct {
 	// Stored files
 	files           []string
 	replicatedFiles []string
-	encKey []byte
+	encKey          []byte
 
 	// Sync and information
 	tracer    ChordTracer
@@ -61,6 +61,7 @@ type NodeInfo struct {
 	Identifier  big.Int
 	NodeAddress NodeAddress
 	Predecessor NodeAddress
+	NextFinger  int
 	FingerTable []FingerEntry
 	Successors  []NodeAddress
 	JoinPending bool

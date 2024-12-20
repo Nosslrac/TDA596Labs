@@ -46,6 +46,15 @@ func (chord *Chord) parseInput(input string) {
 	command := args[0]
 
 	switch command {
+	case "help\n":
+		fmt.Printf("Commands:\n	StoreFile <localPath>\n	Lookup <fileName>\n	PrintState (alias d)\n	setpw <16 character string>")
+	case "setpw":
+		arg := args[1][:len(args[1])-1] //remove \n
+		if len(arg) != 16 {
+			fmt.Printf("Invalid password length: %d\n", len(arg))
+			return
+		}
+		chord.encKey = []byte(arg)
 	case "hash\n":
 		printHash(&chord.node.Identifier)
 	case "d\n":
@@ -297,27 +306,26 @@ func (chord *Chord) FixFingers() {
 	succId := hashString(chord.node.Successors[0])
 
 	// chord.tracer.Trace("## Node %x ###", &chord.node.Identifier)
-	for n := 1; n <= keySize; n++ {
-		var finger *FingerEntry = &chord.node.FingerTable[n]
-		var askNode NodeAddress
+	chord.node.NextFinger = (chord.node.NextFinger + 1) % keySize
 
-		// If between ourself and our succ => finger should point at our succ
-		if validSucc && between(&chord.node.Identifier, &finger.Identifier, succId, true) {
-			finger.NodeAddress = chord.node.Successors[0]
-			continue
-		}
-		// If finger containes our address ask our succ to resolve, since we don't  know
-		if validSucc && finger.NodeAddress == chord.node.NodeAddress {
-			// Can't use finger address ask successor to do it for us
-			askNode = chord.node.Successors[0]
-		} else {
-			// Use finger address to ask
-			askNode = finger.NodeAddress
-		}
+	var finger *FingerEntry = &chord.node.FingerTable[chord.node.NextFinger]
+	var askNode NodeAddress
 
-		if !chord.resolveFinger(askNode, n) { // If this failes
+	// If between ourself and our succ => finger should point at our succ
+	if validSucc && between(&chord.node.Identifier, &finger.Identifier, succId, true) {
+		finger.NodeAddress = chord.node.Successors[0]
+	}
+	// If finger containes our address ask our succ to resolve, since we don't  know
+	if validSucc && finger.NodeAddress == chord.node.NodeAddress {
+		// Can't use finger address ask successor to do it for us
+		askNode = chord.node.Successors[0]
+	} else {
+		// Use finger address to ask
+		askNode = finger.NodeAddress
+	}
 
-		}
+	if !chord.resolveFinger(askNode, chord.node.NextFinger) { // If this failes
+
 	}
 }
 
@@ -455,31 +463,33 @@ func (chord *Chord) find(identifier *big.Int, response *Response) RetCode {
 	// Find closest node
 	// If finger table is not initialized yet => call successors to resolve
 
-	// Check if solo in ring => return self
-	if chord.node.Successors[0] == "X" { // SOLO
-		chord.tracer.Trace("Pred in solo case")
-		//Solo in ring => return ourself as succ
-		response.NodeAddress = chord.node.NodeAddress
-		response.Identifier = chord.node.Identifier //ourself
-		response.IsSuccessor = true
-		return SOLONODE
-	}
+	for i, _ := range chord.node.Successors {
+		// Check if solo in ring => return self
+		if chord.node.Successors[i] == "X" { // SOLO
+			chord.tracer.Trace("Pred in solo case")
+			//Solo in ring => return ourself as succ
+			response.NodeAddress = chord.node.NodeAddress
+			response.Identifier = chord.node.Identifier //ourself
+			response.IsSuccessor = true
+			return SOLONODE
+		}
 
-	// If between me and my successor => found the true successor
-	currSucc := hashString(chord.node.Successors[0])
-	if between(&chord.node.Identifier, identifier, currSucc, true) {
-		response.NodeAddress = chord.node.Successors[0]
-		response.Identifier = *currSucc
-		response.IsSuccessor = true
-		return MYSUCC
-	}
-	pred := hashString(chord.node.Predecessor)
-	if between(pred, identifier, &chord.node.Identifier, true) {
-		// Between me and my predecessor => I am the successor of the address
-		response.NodeAddress = chord.node.NodeAddress
-		response.Identifier = chord.node.Identifier
-		response.IsSuccessor = true
-		return IAMSUCC
+		// If between me and my successor => found the true successor
+		currSucc := hashString(chord.node.Successors[i])
+		if between(&chord.node.Identifier, identifier, currSucc, true) {
+			response.NodeAddress = chord.node.Successors[i]
+			response.Identifier = *currSucc
+			response.IsSuccessor = true
+			return MYSUCC
+		}
+		pred := hashString(chord.node.Predecessor)
+		if between(pred, identifier, &chord.node.Identifier, true) {
+			// Between me and my predecessor => I am the successor of the address
+			response.NodeAddress = chord.node.NodeAddress
+			response.Identifier = chord.node.Identifier
+			response.IsSuccessor = true
+			return IAMSUCC
+		}
 	}
 
 	return chord.closestPreceedingNode(identifier, response)
@@ -489,17 +499,16 @@ func (chord *Chord) find(identifier *big.Int, response *Response) RetCode {
 func (chord *Chord) closestPreceedingNode(identifier *big.Int, joinResp *Response) RetCode {
 	// If table is not initialized, ask successor to resolve
 
-	for n := keySize; n > 1; n-- {
-		isBetween := between(&chord.node.FingerTable[n].Identifier, identifier, &chord.node.FingerTable[n-1].Identifier, true)
+	for n := keySize; n >= 1; n-- {
+		isBetween := between(&chord.node.Identifier, identifier, &chord.node.FingerTable[n].Identifier, true)
 		if isBetween {
 			// chord.tracer.Trace("Found in between %d and %d: %s", n, n-1, chord.node.FingerTable[n-1].NodeAddress)
-			joinResp.Identifier = chord.node.FingerTable[n-1].Identifier
-			joinResp.NodeAddress = chord.node.FingerTable[n-1].NodeAddress
+			joinResp.Identifier = chord.node.FingerTable[n].Identifier
+			joinResp.NodeAddress = chord.node.FingerTable[n].NodeAddress
 			return PASSALONG
 		}
 	}
-	joinResp.Identifier = chord.node.FingerTable[keySize].Identifier
-	joinResp.NodeAddress = chord.node.FingerTable[keySize].NodeAddress
+	joinResp.NodeAddress = chord.node.Successors[0]
 	return PASSALONG
 }
 
@@ -563,7 +572,7 @@ func (chord *Chord) initDuplication() {
 }
 
 func (chord *Chord) reassignToPred() {
-	if len(chord.files) == 0 || chord.node.Predecessor == chord.node.NodeAddress{
+	if len(chord.files) == 0 || chord.node.Predecessor == chord.node.NodeAddress {
 		return
 	}
 	// Called when our predecessor dies => store all files that we replicated
@@ -581,12 +590,12 @@ func (chord *Chord) reassignToPred() {
 		}
 
 		content, err := os.ReadFile(fileDir + entry)
-		
+
 		if err != nil {
 			log.Printf("Failure redist %s to our predecessor: %v", entry, err)
 			continue
 		}
-		
+
 		os.Remove(fileDir + entry)
 		storeFileReq := StoreFileRequest{*fileId, entry, content, false}
 		chord.chordSync.Unlock()
@@ -598,7 +607,6 @@ func (chord *Chord) reassignToPred() {
 		chord.files = keepFiles
 	}
 }
-
 
 func (chord *Chord) reassignDuplicatedToMe() {
 	if len(chord.replicatedFiles) == 0 {
@@ -676,7 +684,7 @@ func getArgs() Chord {
 	nodeAddress := *address + ":" + *portvar
 	id := getIdentifier(NodeAddress(nodeAddress), *identifier)
 	return Chord{"tcp",
-		NodeInfo{*id, NodeAddress(nodeAddress), "", make([]FingerEntry, keySize+1), make([]NodeAddress, *numSucc), true},
+		NodeInfo{*id, NodeAddress(nodeAddress), "", 0, make([]FingerEntry, keySize+1), make([]NodeAddress, *numSucc), true},
 		*numSucc, *joinAddress, *joinPort,
 		Timings{
 			time.Millisecond * time.Duration(*stabilize),
@@ -746,38 +754,37 @@ func (chord *Chord) initIntervals() {
 	}()
 }
 
-
 func encrypt(content []byte, encKey []byte) ([]byte, error) {
-    block, err := aes.NewCipher(encKey)
-    if err != nil {
-        return content, err
-    }
-    gcm, err := cipher.NewGCM(block)
-    if err != nil {
-        return content, err
-    }
-    nonce := make([]byte, gcm.NonceSize())
-    if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-        return content, err
-    }
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return content, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return content, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return content, err
+	}
 
-    return gcm.Seal(nonce, nonce, content, nil), nil
+	return gcm.Seal(nonce, nonce, content, nil), nil
 }
 
 func decrypt(content []byte, encKey []byte) ([]byte, error) {
-    block, err := aes.NewCipher(encKey)
-    if err != nil {
-        return content, err
-    }
-    gcm, err := cipher.NewGCM(block)
-    if err != nil {
-        return content, err
-    }
-    nonce := content[:gcm.NonceSize()]
-    content = content[gcm.NonceSize():]
-    plainText, err := gcm.Open(nil, nonce, content, nil)
-    if err != nil {
-        return content, err
-    }
-    return plainText, nil
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return content, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return content, err
+	}
+	nonce := content[:gcm.NonceSize()]
+	content = content[gcm.NonceSize():]
+	plainText, err := gcm.Open(nil, nonce, content, nil)
+	if err != nil {
+		return content, err
+	}
+	return plainText, nil
 }

@@ -24,14 +24,15 @@ func (chord *Chord) CallNotify(nodeAddress NodeAddress) {
 		return
 	}
 	chord.chordSync.Lock()
-	defer chord.chordSync.Unlock()
 	if resp.Success {
 		chord.node.JoinPending = false
 		chord.node.Successors[0] = nodeAddress
+		chord.chordSync.Unlock()
 		return
 	} else {
 		chord.tracer.Trace("Calling notify on new pred %s", resp.NewPredAddress)
-		defer chord.CallNotify(resp.NewPredAddress)
+		chord.chordSync.Unlock()
+		go chord.CallNotify(resp.NewPredAddress)
 	}
 
 }
@@ -45,11 +46,8 @@ func (chord *Chord) CallJoin(nodeAddress NodeAddress) {
 		log.Fatal("Cannot join specified node on chord ring")
 	}
 	// Join successful
-	chord.chordSync.Lock()
-	defer chord.chordSync.Unlock()
 	chord.tracer.Trace("### Received closest predecessor ###\nIsSucc: %v, Received: %s\nId: %01x\n",
 		Response.IsSuccessor, Response.NodeAddress, &Response.Identifier)
-
 	if Response.IsSuccessor {
 		// TODO: notify node that I am new predecessor Notify node
 		// Shift successors
